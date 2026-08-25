@@ -14,14 +14,18 @@ STANDARD_JPEG_QUALITY_RANGE = (70, 100)
 KERNEL_SIZE = 21
 
 
-def sample_standard_kernel(rng: np.random.Generator) -> np.ndarray:
-    """Isotropic Gaussian blur kernel (sigma_x == sigma_y, theta == 0)."""
+def sample_standard_kernel(rng: np.random.Generator) -> tuple[np.ndarray, float]:
+    """Isotropic Gaussian blur kernel (sigma_x == sigma_y, theta == 0).
+    Returns (kernel, sigma) — the sigma is returned alongside the kernel
+    (matching src.degradation.mismatch_degrade.sample_mismatch_kernel's
+    pattern) so callers can record the *actual* sigma used as ground truth
+    instead of re-sampling a second, inconsistent one."""
     sigma = rng.uniform(*STANDARD_SIGMA_RANGE)
     ax = np.arange(KERNEL_SIZE) - KERNEL_SIZE // 2
     xx, yy = np.meshgrid(ax, ax)
     kernel = np.exp(-(xx ** 2 + yy ** 2) / (2 * sigma ** 2))
     kernel /= kernel.sum()
-    return kernel.astype(np.float32)
+    return kernel.astype(np.float32), sigma
 
 
 def _blur(hr: np.ndarray, kernel: np.ndarray) -> np.ndarray:
@@ -48,12 +52,11 @@ def _jpeg_recompress(img: np.ndarray, quality: int) -> np.ndarray:
 
 def degrade_standard(hr: np.ndarray, scale: int, rng: np.random.Generator) -> tuple[np.ndarray, dict]:
     """hr: (H, W, 3) float32 in [0, 1]. Returns (lr, ground_truth_params)."""
-    sigma = rng.uniform(*STANDARD_SIGMA_RANGE)
-    kernel = sample_standard_kernel(rng)
+    kernel, sigma = sample_standard_kernel(rng)
     blurred = _blur(hr, kernel)
     lr = _average_pool_downsample(blurred, scale)
     noise_sigma = rng.uniform(*STANDARD_NOISE_RANGE)
-    lr = _add_noise(lr, noise_sigma, rng)
+    lr = np.clip(_add_noise(lr, noise_sigma, rng), 0.0, 1.0)
     quality = int(rng.integers(*STANDARD_JPEG_QUALITY_RANGE))
     lr = _jpeg_recompress(lr, quality)
     params = {"sigma_x": float(sigma), "sigma_y": float(sigma), "theta": 0.0, "noise_sigma": float(noise_sigma)}

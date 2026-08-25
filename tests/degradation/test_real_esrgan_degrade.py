@@ -4,10 +4,11 @@ from src.degradation.real_esrgan_degrade import sample_standard_kernel, degrade_
 
 def test_sample_standard_kernel_is_normalized_2d():
     rng = np.random.default_rng(0)
-    kernel = sample_standard_kernel(rng)
+    kernel, sigma = sample_standard_kernel(rng)
     assert kernel.ndim == 2
     assert kernel.shape[0] == kernel.shape[1]
     assert np.isclose(kernel.sum(), 1.0, atol=1e-5)
+    assert 0.2 <= sigma <= 1.5
 
 
 def test_degrade_standard_output_shape_and_downsample_consistency():
