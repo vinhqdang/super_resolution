@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# superpowers subagent-driven-development scratch workspace
+.superpowers/
+
+# datasets and model checkpoints (large binaries, not source)
+data/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
