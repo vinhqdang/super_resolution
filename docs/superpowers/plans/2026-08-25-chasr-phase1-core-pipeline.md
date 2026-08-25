@@ -460,7 +460,7 @@ git push origin main
 
 **Interfaces:**
 - Consumes: `ddnm_project` from `src.backbone.ddnm_projection`.
-- Produces: `class DiffusionSRBackbone` with `__init__(self, pipeline=None, device="cuda")` (lazy-loads `diffusers.StableDiffusionUpscalePipeline.from_pretrained("stabilityai/stable-diffusion-x4-upscaler")` in fp16 if `pipeline is None`; accepts an injected stub for testing), and `sample_k_16x(self, lr_patch: torch.Tensor, k: int, base_seed: int) -> list[torch.Tensor]` returning `k` tensors of shape `(3, 1024, 1024)` for a `(3, 64, 64)` input, each DDNM-projected against the true observation at every hop. Consumed by Task 6 (S1), Task 7 (S2), Task 11 (benchmark).
+- Produces: `class DiffusionSRBackbone` with `__init__(self, pipeline=None, device="cuda")` (lazy-loads `diffusers.StableDiffusionUpscalePipeline.from_pretrained("stabilityai/stable-diffusion-x4-upscaler")` in fp16 if `pipeline is None`; accepts an injected stub for testing), and `sample_k_16x(self, lr_patch: torch.Tensor, k: int, base_seed: int) -> list[torch.Tensor]` returning `k` tensors of shape `(3, 1024, 1024)` for a `(3, 64, 64)` input, each DDNM-projected against the true observation at every hop; plus module-level `estimate_prior_reliance_map(backbone, lr_patch, base_seed=0, eps=1e-2) -> torch.Tensor` returning `(1024, 1024)` in `[0, 1]` — the real-pipeline S2 estimator (see Step 3 docstring for why this doesn't reuse `compute_prior_reliance` from Task 7 directly: that function assumes a continuously-perturbable latent, but this backbone's stochasticity is a discrete seed). Consumed by Task 6 (S1), Task 12/Task 14 (S2 in the real pipeline), Task 11 (benchmark).
 
 - [ ] **Step 1: Write the failing test using a stub pipeline (no real model download)**
 
@@ -512,6 +512,45 @@ def test_sample_k_16x_different_seeds_give_different_samples():
     lr_patch = torch.rand(3, 64, 64)
     samples = backbone.sample_k_16x(lr_patch, k=2, base_seed=0)
     assert not torch.allclose(samples[0], samples[1])
+
+
+class _ContentOnlyPipeline:
+    """Output depends only on the input image (nearest-neighbor 4x upsample)
+    and completely ignores the generator/seed — the opposite extreme from
+    _StubPipeline. Used to verify estimate_prior_reliance_map reports near-
+    zero prior reliance when the seed provably doesn't matter."""
+
+    def __call__(self, image, generator, num_inference_steps=20, output_type="pt"):
+        out = torch.nn.functional.interpolate(image.unsqueeze(0), scale_factor=4, mode="nearest")
+        return type("Result", (), {"images": out})()
+
+
+def test_estimate_prior_reliance_map_output_shape():
+    from src.backbone.diffusion_backbone import estimate_prior_reliance_map
+
+    backbone = DiffusionSRBackbone(pipeline=_StubPipeline(), device="cpu")
+    lr_patch = torch.rand(3, 64, 64)
+    s2 = estimate_prior_reliance_map(backbone, lr_patch)
+    assert s2.shape == (1024, 1024)
+    assert (s2 >= 0).all() and (s2 <= 1).all()
+
+
+def test_estimate_prior_reliance_map_high_when_only_seed_matters():
+    from src.backbone.diffusion_backbone import estimate_prior_reliance_map
+
+    backbone = DiffusionSRBackbone(pipeline=_StubPipeline(), device="cpu")
+    lr_patch = torch.rand(3, 64, 64)
+    s2 = estimate_prior_reliance_map(backbone, lr_patch)
+    assert s2.mean() > 0.9
+
+
+def test_estimate_prior_reliance_map_low_when_only_content_matters():
+    from src.backbone.diffusion_backbone import estimate_prior_reliance_map
+
+    backbone = DiffusionSRBackbone(pipeline=_ContentOnlyPipeline(), device="cpu")
+    lr_patch = torch.rand(3, 64, 64)
+    s2 = estimate_prior_reliance_map(backbone, lr_patch)
+    assert s2.mean() < 0.1
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -585,6 +624,32 @@ class DiffusionSRBackbone:
             final = ddnm_project(stitched, lr_patch, scale=16)
             samples.append(final)
         return samples
+
+
+def estimate_prior_reliance_map(backbone: DiffusionSRBackbone, lr_patch: torch.Tensor, base_seed: int = 0, eps: float = 1e-2) -> torch.Tensor:
+    """Signal S2 (spec Section 2), real-pipeline implementation. Generic
+    finite-difference sensitivity (src/signals/prior_reliance.py) assumes a
+    continuously-perturbable forward_fn and latent code; this backbone's
+    stochasticity is a discrete integer seed, not a continuous latent, so
+    S2 is estimated directly here instead: sensitivity of the raw (pre-
+    DDNM-projection) hop-1 output to a small perturbation of the LR
+    evidence at fixed seed (g_evidence) vs. to a different seed at fixed LR
+    evidence (g_prior, a discrete perturbation — no eps normalization).
+    Computed once at hop-1 resolution (256x256) — only 2 extra single-hop
+    diffusion calls, not full 16x chains — then nearest-upsampled to
+    1024x1024 to align with S1/S3/S4.
+    """
+    base_hop1 = backbone._upscale_4x(lr_patch, seed=base_seed)  # (3, 256, 256)
+
+    lr_perturbed = lr_patch + eps * torch.randn_like(lr_patch)
+    hop1_lr_perturbed = backbone._upscale_4x(lr_perturbed, seed=base_seed)
+    g_evidence = (hop1_lr_perturbed - base_hop1).abs().mean(dim=0) / eps  # (256, 256)
+
+    hop1_seed_perturbed = backbone._upscale_4x(lr_patch, seed=base_seed + 1)
+    g_prior = (hop1_seed_perturbed - base_hop1).abs().mean(dim=0)  # (256, 256)
+
+    s2_hop1 = g_prior / (g_prior + g_evidence + 1e-8)
+    return torch.nn.functional.interpolate(s2_hop1.unsqueeze(0).unsqueeze(0), size=(1024, 1024), mode="nearest").squeeze(0).squeeze(0)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -718,7 +783,7 @@ git push origin main
 - Test: `tests/signals/test_prior_reliance.py`
 
 **Interfaces:**
-- Produces: `compute_prior_reliance(forward_fn, lr: torch.Tensor, z: torch.Tensor, eps: float = 1e-3) -> torch.Tensor` returning `(H, W)` in `[0, 1]`, where `forward_fn(lr, z) -> torch.Tensor` (shape `(C, H, W)`) is any differentiable-or-perturbable stand-in for the backbone (the real backbone is not literally differentiable end-to-end through diffusion sampling, so this uses finite-difference perturbation, which works for any black-box `forward_fn`). Consumed by Task 12 and Task 14.
+- Produces: `compute_prior_reliance(forward_fn, lr: torch.Tensor, z: torch.Tensor, eps: float = 1e-3) -> torch.Tensor` returning `(H, W)` in `[0, 1]`, where `forward_fn(lr, z) -> torch.Tensor` (shape `(C, H, W)`) is any differentiable-or-perturbable stand-in for the backbone. This is a general, standalone-tested utility for any forward_fn with a continuous latent `z` — it is deliberately NOT wired into the real CHASR pipeline, because `DiffusionSRBackbone`'s stochasticity is a discrete integer seed, not a continuous latent that `z + eps*randn` can perturb. The real pipeline's S2 uses `estimate_prior_reliance_map` from Task 5 instead (see that task's docstring). Not consumed elsewhere in this plan — kept as a documented, tested building block for a future differentiable backbone.
 - Consumes: nothing beyond `torch` — takes `forward_fn` as a parameter so tests use a simple synthetic function instead of the real backbone.
 
 - [ ] **Step 1: Write the failing test with a synthetic forward function of known sensitivity**
@@ -1178,8 +1243,14 @@ from sklearn.neighbors import NearestNeighbors
 
 
 def extract_dinov2_features(encoder, patches: torch.Tensor) -> torch.Tensor:
-    """patches: (B, 3, H, W). Returns (B, D)."""
-    out = encoder(pixel_values=patches) if _accepts_kwarg(encoder) else encoder(patches)
+    """patches: (B, 3, H, W). Returns (B, D). interpolate_pos_encoding=True is
+    required for the real model because CHASR patches (e.g. 1024x1024 SR
+    output) are not the fixed size DINOv2 was pretrained at; omitting it
+    raises a position-embedding size mismatch at inference time."""
+    if _accepts_kwarg(encoder):
+        out = encoder(pixel_values=patches, interpolate_pos_encoding=True)
+    else:
+        out = encoder(patches)
     return out.pooler_output
 
 
@@ -1241,7 +1312,7 @@ def main():
             img = Image.open(p).convert("RGB").resize((args.patch_size, args.patch_size))
             tensor = torch.from_numpy(np.asarray(img)).permute(2, 0, 1).float().unsqueeze(0) / 255.0
             tensor = tensor.to(device)
-            out = encoder(pixel_values=tensor)
+            out = encoder(pixel_values=tensor, interpolate_pos_encoding=True)
             features.append(out.pooler_output.cpu())
 
     bank = torch.cat(features, dim=0)
@@ -1685,33 +1756,34 @@ Expected: 3 passed.
 
 ```python
 # src/fusion/train.py
-"""Trains the fusion head on xSR-CausalBench. This module builds the
-per-pixel signal stack for each (lr, hr) pair — S1 requires K backbone
-samples, S2 a forward_fn, S3 the kernel estimator, S4 the feature bank —
-so it wires together every prior task's output. Run manually via
-scripts/train_fusion_head.py once a trained kernel estimator and feature
-bank checkpoint exist (Tasks 8 and 10).
+"""Trains the fusion head on xSR-CausalBench. Each dataset item's signal
+stack requires ~5 diffusion sampling calls per k (1 hop-1 call + 4 tiled
+hop-2 calls) through the backbone (Task 5) — expensive enough that
+recomputing it on every training epoch would make Phase 1 training take
+days on an 8GB laptop GPU. `precompute_signal_stacks` therefore builds
+every (signal_stack, label_map) pair ONCE, optionally caching to disk, and
+`train` iterates epochs over that cheap, cached tensor set — only the
+small fusion head does repeated forward/backward passes.
 """
+import os
+
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
+from src.backbone.diffusion_backbone import estimate_prior_reliance_map
 from src.causalbench.dataset import CausalBenchDataset
 from src.fusion.model import FusionHead
 from src.signals.degradation_mismatch import compute_degradation_mismatch
 from src.signals.distribution_shift import FeatureBank, extract_dinov2_features
 from src.signals.null_space import compute_null_space_variance
-from src.signals.prior_reliance import compute_prior_reliance
 
 
-def build_signal_stack(lr, backbone, kernel_estimator, feature_bank, dino_encoder, k=4):
+def build_signal_stack(lr, backbone, kernel_estimator, feature_bank, dino_encoder, k=2):
     samples = backbone.sample_k_16x(lr, k=k, base_seed=0)
     s1 = compute_null_space_variance(samples)  # (H, W)
 
-    def forward_fn(lr_in, z):
-        return samples[0]  # deterministic stand-in; a fresh perturbed sample would need a live model call
-
-    s2 = compute_prior_reliance(forward_fn, lr, samples[0])  # (H, W)
+    s2 = estimate_prior_reliance_map(backbone, lr, base_seed=0)  # (H, W) — see Task 5 for why this, not compute_prior_reliance
 
     s3_scalar = compute_degradation_mismatch(kernel_estimator, lr.unsqueeze(0))
     s3 = torch.full_like(s1, s3_scalar)
@@ -1724,16 +1796,45 @@ def build_signal_stack(lr, backbone, kernel_estimator, feature_bank, dino_encode
     return torch.stack([s1, s2, s3, s4, luminance], dim=0)  # (5, H, W)
 
 
-def train(dataset: CausalBenchDataset, backbone, kernel_estimator, feature_bank, dino_encoder, epochs: int = 10, device: str = "cuda"):
-    loader = DataLoader(dataset, batch_size=1, shuffle=True)
+def precompute_signal_stacks(dataset: CausalBenchDataset, backbone, kernel_estimator, feature_bank, dino_encoder, k: int = 2, cache_path: str | None = None) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """Returns a list of (signal_stack (5,H,W), label_map (H,W)) pairs,
+    computed once. If cache_path is given and already exists, loads from
+    it instead of recomputing (e.g. across separate training script runs)."""
+    if cache_path and os.path.exists(cache_path):
+        return torch.load(cache_path, weights_only=True)
+
+    cached_items = []
+    for idx in range(len(dataset)):
+        lr, _hr, label_map = dataset[idx]
+        signal_stack = build_signal_stack(lr, backbone, kernel_estimator, feature_bank, dino_encoder, k=k)
+        cached_items.append((signal_stack, label_map))
+
+    if cache_path:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        torch.save(cached_items, cache_path)
+    return cached_items
+
+
+class _CachedSignalDataset(Dataset):
+    def __init__(self, cached_items: list[tuple[torch.Tensor, torch.Tensor]]):
+        self.cached_items = cached_items
+
+    def __len__(self):
+        return len(self.cached_items)
+
+    def __getitem__(self, idx):
+        return self.cached_items[idx]
+
+
+def train(cached_items: list[tuple[torch.Tensor, torch.Tensor]], epochs: int = 30, batch_size: int = 4, device: str = "cuda") -> FusionHead:
+    loader = DataLoader(_CachedSignalDataset(cached_items), batch_size=batch_size, shuffle=True)
     model = FusionHead().to(device)
     optim = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     for epoch in range(epochs):
         total_loss = 0.0
-        for lr, _hr, label_map in loader:
-            lr, label_map = lr.squeeze(0).to(device), label_map.to(device)
-            signal_stack = build_signal_stack(lr, backbone, kernel_estimator, feature_bank, dino_encoder).unsqueeze(0).to(device)
+        for signal_stack, label_map in loader:
+            signal_stack, label_map = signal_stack.to(device), label_map.to(device)
 
             optim.zero_grad()
             cause_logits, _ = model(signal_stack)
@@ -1991,7 +2092,7 @@ git push origin main
 
 **Interfaces:**
 - Consumes: everything from Tasks 4-13.
-- Produces: `run_chasr(lr_patch: torch.Tensor, backbone, kernel_estimator, feature_bank, dino_encoder, fusion_head) -> dict` returning `{"sr_image": Tensor(3,1024,1024), "cause_map": Tensor(1024,1024) long, "reliability_map": Tensor(1024,1024)}`. This is the top-level entry point the manuscript's experiments section reports numbers from.
+- Produces: `run_chasr(lr_patch: torch.Tensor, backbone, kernel_estimator, feature_bank, dino_encoder, fusion_head) -> dict` returning `{"sr_image": Tensor(3,1024,1024), "cause_map": Tensor(1024,1024) long, "reliability_map": Tensor(1024,1024), "signal_stack": Tensor(4,1024,1024)}` (the last is S1-S4 only, for the disentanglement metric — Task 13). This is the top-level entry point the manuscript's experiments section reports numbers from.
 
 - [ ] **Step 1: Write the failing test for end-to-end inference plumbing with stubbed components**
 
@@ -2005,6 +2106,12 @@ from src.fusion.model import FusionHead
 class _StubBackbone:
     def sample_k_16x(self, lr_patch, k, base_seed):
         return [torch.rand(3, 1024, 1024) for _ in range(k)]
+
+    def _upscale_4x(self, patch, seed):
+        # estimate_prior_reliance_map (Task 5) calls this directly; stub it
+        # so run_chasr's plumbing is testable without a real backbone.
+        h, w = patch.shape[-2], patch.shape[-1]
+        return torch.rand(3, h * 4, w * 4)
 
 
 class _StubKernelEstimator:
@@ -2036,6 +2143,7 @@ def test_run_chasr_returns_expected_keys_and_shapes():
     assert result["cause_map"].shape == (1024, 1024)
     assert result["reliability_map"].shape == (1024, 1024)
     assert result["cause_map"].dtype == torch.int64
+    assert result["signal_stack"].shape == (4, 1024, 1024)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2054,10 +2162,10 @@ every reported number.
 """
 import torch
 
+from src.backbone.diffusion_backbone import estimate_prior_reliance_map
 from src.signals.degradation_mismatch import compute_degradation_mismatch
 from src.signals.distribution_shift import extract_dinov2_features
 from src.signals.null_space import compute_null_space_variance
-from src.signals.prior_reliance import compute_prior_reliance
 
 
 def run_chasr(lr_patch, backbone, kernel_estimator, feature_bank, dino_encoder, fusion_head, k: int = 4) -> dict:
@@ -2066,10 +2174,7 @@ def run_chasr(lr_patch, backbone, kernel_estimator, feature_bank, dino_encoder, 
 
     s1 = compute_null_space_variance(samples)
 
-    def forward_fn(lr_in, z):
-        return samples[0]
-
-    s2 = compute_prior_reliance(forward_fn, lr_patch, samples[0])
+    s2 = estimate_prior_reliance_map(backbone, lr_patch, base_seed=0)  # see Task 5 for why this, not compute_prior_reliance
 
     s3_scalar = compute_degradation_mismatch(kernel_estimator, lr_patch.unsqueeze(0))
     s3 = torch.full_like(s1, s3_scalar)
@@ -2086,7 +2191,12 @@ def run_chasr(lr_patch, backbone, kernel_estimator, feature_bank, dino_encoder, 
     cause_map = cause_logits.argmax(dim=1).squeeze(0)
     reliability_map = reliability.squeeze(0).squeeze(0)
 
-    return {"sr_image": sr_image, "cause_map": cause_map, "reliability_map": reliability_map}
+    return {
+        "sr_image": sr_image,
+        "cause_map": cause_map,
+        "reliability_map": reliability_map,
+        "signal_stack": signal_stack.squeeze(0)[:4],  # (4, H, W): S1-S4 only, luminance (index 4) dropped — for disentanglement analysis (Task 13)
+    }
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -2166,9 +2276,20 @@ Expected: 1 passed.
 - checkpoints/feature_bank.pt (Task 10's scripts/build_feature_bank.py)
 - data/DIV2K_train_HR/, data/DIV2K_valid_HR/ (scripts/download_datasets.py)
 
+HR images are resized to exactly 1024x1024 — this must match
+DiffusionSRBackbone.sample_k_16x's fixed 16x factor (Task 5): at
+scale=16, CausalBenchDataset then produces exactly 64x64 LR patches,
+which is what the backbone expects as input. Do not change one without
+the other. TRAIN_MAX_IMAGES/TRAIN_K are kept small deliberately — each
+dataset item costs ~5 diffusion calls per k during the one-time
+precompute pass below; 40 images x 4 procedures x k=2 x 5 calls = 1600
+diffusion calls, roughly 2-3 hours one-time on an 8GB laptop GPU. Raise
+these only once Phase 1 numbers exist and you're deliberately scaling up.
+
 Run: conda run -n py313 python scripts/train_fusion_head.py
 """
 import glob
+import os
 
 import numpy as np
 import torch
@@ -2177,17 +2298,21 @@ from transformers import AutoModel
 
 from src.backbone.diffusion_backbone import DiffusionSRBackbone
 from src.causalbench.dataset import CausalBenchDataset
-from src.fusion.train import train
+from src.fusion.train import precompute_signal_stacks, train
 from src.signals.distribution_shift import FeatureBank
 from src.signals.kernel_estimator import KernelEstimator
+
+HR_PATCH_SIZE = 1024  # must match DiffusionSRBackbone's fixed 16x output size
+TRAIN_MAX_IMAGES = 40
+TRAIN_K = 2
 
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    hr_paths = sorted(glob.glob("data/DIV2K_valid_HR/*.png"))[:200]
-    hr_images = [np.asarray(Image.open(p).convert("RGB").resize((256, 256))).astype(np.float32) / 255.0 for p in hr_paths]
-    ood_paths = sorted(glob.glob("data/DIV2K_valid_HR/*.png"))[200:210]
+    hr_paths = sorted(glob.glob("data/DIV2K_valid_HR/*.png"))[:TRAIN_MAX_IMAGES]
+    hr_images = [np.asarray(Image.open(p).convert("RGB").resize((HR_PATCH_SIZE, HR_PATCH_SIZE))).astype(np.float32) / 255.0 for p in hr_paths]
+    ood_paths = sorted(glob.glob("data/DIV2K_valid_HR/*.png"))[TRAIN_MAX_IMAGES : TRAIN_MAX_IMAGES + 10]
     ood_patches = [np.asarray(Image.open(p).convert("RGB").resize((64, 64))).astype(np.float32) / 255.0 for p in ood_paths]
 
     dataset = CausalBenchDataset(hr_images, ood_patches, scale=16, seed=0)
@@ -2200,9 +2325,10 @@ def main():
     dino_encoder = AutoModel.from_pretrained("facebook/dinov2-small").to(device).eval()
     backbone = DiffusionSRBackbone(device=device)
 
-    model = train(dataset, backbone, kernel_estimator, feature_bank, dino_encoder, epochs=10, device=device)
-
-    import os
+    cached_items = precompute_signal_stacks(
+        dataset, backbone, kernel_estimator, feature_bank, dino_encoder, k=TRAIN_K, cache_path="checkpoints/causalbench_signal_cache.pt"
+    )
+    model = train(cached_items, epochs=30, device=device)
 
     os.makedirs("checkpoints", exist_ok=True)
     torch.save(model.state_dict(), "checkpoints/fusion_head.pt")
@@ -2218,6 +2344,12 @@ if __name__ == "__main__":
 """Runs the full Phase 1 evaluation protocol (spec Section 5) and prints a
 results table: fidelity metrics, attribution accuracy/mIoU on a held-out
 xSR-CausalBench split, and the disentanglement correlation matrix.
+
+HR images are resized to 1024x1024, matching scripts/train_fusion_head.py
+(see that file's docstring for why — must match the backbone's fixed 16x
+factor). The held-out image range [50:70] is deliberately disjoint from
+train_fusion_head.py's [0:40] + [40:50] ood range so evaluation never
+sees a training image.
 
 Run: conda run -n py313 python scripts/run_evaluation.py
 """
@@ -2238,13 +2370,17 @@ from src.fusion.model import FusionHead
 from src.signals.distribution_shift import FeatureBank
 from src.signals.kernel_estimator import KernelEstimator
 
+HR_PATCH_SIZE = 1024  # must match DiffusionSRBackbone's fixed 16x output size
+EVAL_MAX_IMAGES = 20
+
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    hr_paths = sorted(glob.glob("data/DIV2K_valid_HR/*.png"))[210:260]
-    hr_images = [np.asarray(Image.open(p).convert("RGB").resize((256, 256))).astype(np.float32) / 255.0 for p in hr_paths]
-    ood_patches = hr_images[:5]
+    hr_paths = sorted(glob.glob("data/DIV2K_valid_HR/*.png"))[50 : 50 + EVAL_MAX_IMAGES]
+    hr_images = [np.asarray(Image.open(p).convert("RGB").resize((HR_PATCH_SIZE, HR_PATCH_SIZE))).astype(np.float32) / 255.0 for p in hr_paths]
+    ood_paths = sorted(glob.glob("data/DIV2K_valid_HR/*.png"))[50 + EVAL_MAX_IMAGES : 50 + EVAL_MAX_IMAGES + 5]
+    ood_patches = [np.asarray(Image.open(p).convert("RGB").resize((64, 64))).astype(np.float32) / 255.0 for p in ood_paths]
 
     held_out = CausalBenchDataset(hr_images, ood_patches, scale=16, seed=100)
 
@@ -2271,10 +2407,17 @@ def main():
         accuracies.append(pixel_accuracy(result["cause_map"], gt_label_map))
         ious.append(mean_iou(result["cause_map"], gt_label_map))
 
+        all_signals.append(result["signal_stack"].reshape(4, -1))  # (4, H*W) per image
+
     print(f"PSNR: {np.mean(psnrs):.2f}")
     print(f"SSIM: {np.mean(ssims):.4f}")
     print(f"Attribution pixel accuracy: {np.mean(accuracies):.4f}")
     print(f"Attribution mIoU: {np.mean(ious):.4f}")
+
+    flattened_signals = torch.cat(all_signals, dim=1)  # (4, N * H * W) across all held-out images
+    corr = signal_correlation_matrix(flattened_signals)
+    print("S1-S4 disentanglement correlation matrix (spec Section 5, item 5):")
+    print(corr)
 
 
 if __name__ == "__main__":
