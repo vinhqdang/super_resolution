@@ -315,7 +315,7 @@ MISMATCH_SIGMA_RANGE = (1.6, 4.0)  # disjoint from STANDARD_SIGMA_RANGE = (0.2, 
 MISMATCH_THETA_RANGE = (0.0, np.pi)
 
 
-def sample_mismatch_kernel(rng: np.random.Generator) -> np.ndarray:
+def sample_mismatch_kernel(rng: np.random.Generator) -> tuple[np.ndarray, float, float, float]:
     """Anisotropic, rotated Gaussian blur kernel — outside the standard pool."""
     sigma_x = rng.uniform(*MISMATCH_SIGMA_RANGE)
     sigma_y = rng.uniform(*MISMATCH_SIGMA_RANGE)
