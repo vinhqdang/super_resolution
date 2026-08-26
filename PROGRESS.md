@@ -19,7 +19,7 @@ Tracks implementation progress for the Phase 1 plan so work can resume from any 
 | 1 | Repo scaffolding & environment setup | ✅ done | `7af974a..889cc0e` |
 | 2 | Standard degradation pipeline | ✅ done (1 fix round — sigma ground-truth bug) | `889cc0e..d3a7b20` |
 | 3 | Mismatch (OOD) degradation pipeline | ✅ done | `d3a7b20..36ffc72` |
-| 4 | DDNM range-null space projection | ⬜ not started | |
+| 4 | DDNM range-null space projection | ✅ done | `36ffc72..44b6f55` |
 | 5 | Chained diffusion backbone (16x, tiled, multi-sample) + `estimate_prior_reliance_map` | ⬜ not started | |
 | 6 | Signal S1 — null-space variance | ⬜ not started | |
 | 7 | Signal S2 — generative-prior over-reliance (standalone utility; real pipeline uses Task 5's estimator) | ⬜ not started | |
@@ -42,6 +42,11 @@ Caught in the pre-flight conflict scan before any code was written (see plan's r
 Caught during Task 2's review:
 - `degrade_standard` recorded a `sigma` in its ground-truth params that didn't match the sigma actually used to build the blur kernel (double-sampled from the RNG stream). Fixed by having `sample_standard_kernel` return `(kernel, sigma)` instead of just the kernel.
 
+Caught during Task 4's review:
+- `ddnm_project` used `.view()` on `x_hat`/`y` instead of `.reshape()`, which would raise `RuntimeError` on non-contiguous tensors — plausible for real diffusion sampler outputs (post-`permute`/batched-index results) once wired into Task 5's backbone wrapper. Fixed by switching to `.reshape()`, matching the pattern already used for the output; added a regression test with a non-contiguous input tensor plus tests for the general (non-identity) null-space invariant and the `scale=1` degenerate case.
+
+Environment note (2026-08-26, second machine): `opencv-python`, `diffusers`, `lpips`, and `easyocr` from `requirements.txt` were not yet installed in this machine's `py313` conda env — installed via `pip install -r requirements.txt` (split into two calls after a mid-download connection reset). No code changes; flagging in case other machines hit the same gap.
+
 ## Next up
 
-Task 4: DDNM range-null space projection (`src/backbone/ddnm_projection.py`) — pure tensor math, no GPU/model dependency, should be fast to implement and review.
+Task 5: Chained diffusion backbone wrapper (16x, tiled, multi-sample) + `estimate_prior_reliance_map` (`docs/superpowers/plans/2026-08-25-chasr-phase1-core-pipeline.md`, line 454) — first GPU-heavy task; verify `stabilityai/stable-diffusion-x4-upscaler` availability and unit-test-with-stub-object strategy per the plan's Global Constraints before starting.
