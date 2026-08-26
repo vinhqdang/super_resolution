@@ -21,7 +21,7 @@ Tracks implementation progress for the Phase 1 plan so work can resume from any 
 | 3 | Mismatch (OOD) degradation pipeline | ✅ done | `d3a7b20..36ffc72` |
 | 4 | DDNM range-null space projection | ✅ done | `36ffc72..44b6f55` |
 | 5 | Chained diffusion backbone (16x, tiled, multi-sample) + `estimate_prior_reliance_map` | ✅ done — real GPU run verified, not just stub tests | see below |
-| 6 | Signal S1 — null-space variance | ⬜ not started | |
+| 6 | Signal S1 — null-space variance | ✅ done | `269e095..2916971` |
 | 7 | Signal S2 — generative-prior over-reliance (standalone utility; real pipeline uses Task 5's estimator) | ⬜ not started | |
 | 8 | Blind degradation kernel estimator | ⬜ not started | |
 | 9 | Signal S3 — degradation-model mismatch | ⬜ not started | |
@@ -61,6 +61,8 @@ Caught only by actually running the real model on GPU (none of the above were ca
 
 **Known cosmetic limitation, not yet fixed:** the 2x2 tile-stitching in `sample_k_16x` has no overlap/blending, so real outputs show a faint grid-seam artifact at the tile boundaries (visible in the Task 5 demo images). Not blocking — DDNM projection still enforces exact data consistency across the seams — but worth revisiting (e.g. overlapping tiles + linear blend) if later signal quality is affected.
 
+Task 6 (`compute_null_space_variance`) matched the plan verbatim and passed code review with no HIGH/CRITICAL findings — only a MEDIUM (no test pinned the unbiased-variance estimator choice against a silent scale-changing regression; added `test_variance_matches_unbiased_formula` with hand-computed expected values) and a LOW (moved a nested `import pytest` to module scope). Note for Task 12: production usage calls this with `k=2` (per the plan's `build_signal_stack`), which is a very small sample for a variance estimate — noted as a design consideration for that task, not a defect here.
+
 ## Next up
 
-Task 6: Signal S1 — null-space variance (`docs/superpowers/plans/2026-08-25-chasr-phase1-core-pipeline.md`, line ~696) — pixelwise variance across `sample_k_16x`'s K stochastic samples; should be a small, fast, GPU-free-to-test module now that Task 5 provides real (and stub-testable) samples to compute variance over.
+Task 7: Signal S2 — generative-prior over-reliance (`docs/superpowers/plans/2026-08-25-chasr-phase1-core-pipeline.md`, line ~779) — standalone finite-difference utility (the real pipeline already uses Task 5's `estimate_prior_reliance_map`); should be a small, GPU-free-to-test module.
