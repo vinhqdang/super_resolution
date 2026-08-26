@@ -22,7 +22,7 @@ Tracks implementation progress for the Phase 1 plan so work can resume from any 
 | 4 | DDNM range-null space projection | ✅ done | `36ffc72..44b6f55` |
 | 5 | Chained diffusion backbone (16x, tiled, multi-sample) + `estimate_prior_reliance_map` | ✅ done — real GPU run verified, not just stub tests | see below |
 | 6 | Signal S1 — null-space variance | ✅ done | `269e095..2916971` |
-| 7 | Signal S2 — generative-prior over-reliance (standalone utility; real pipeline uses Task 5's estimator) | ⬜ not started | |
+| 7 | Signal S2 — generative-prior over-reliance (standalone utility; real pipeline uses Task 5's estimator) | ✅ done | `485fe96..9516b22` |
 | 8 | Blind degradation kernel estimator | ⬜ not started | |
 | 9 | Signal S3 — degradation-model mismatch | ⬜ not started | |
 | 10 | Signal S4 — distribution shift via DINOv2 | ⬜ not started | |
@@ -63,6 +63,8 @@ Caught only by actually running the real model on GPU (none of the above were ca
 
 Task 6 (`compute_null_space_variance`) matched the plan verbatim and passed code review with no HIGH/CRITICAL findings — only a MEDIUM (no test pinned the unbiased-variance estimator choice against a silent scale-changing regression; added `test_variance_matches_unbiased_formula` with hand-computed expected values) and a LOW (moved a nested `import pytest` to module scope). Note for Task 12: production usage calls this with `k=2` (per the plan's `build_signal_stack`), which is a very small sample for a variance estimate — noted as a design consideration for that task, not a defect here.
 
+Task 7 (`compute_prior_reliance`) matched the plan verbatim and passed code review with no HIGH/CRITICAL findings. The review specifically checked whether this file's symmetric eps-normalization (both `g_evidence` and `g_prior` divided by the same `eps`) has an analogous bug to Task 5's real asymmetric-eps bug (`estimate_prior_reliance_map`, logged above) — confirmed it does not; the `eps` division is algebraically inert to the ratio here, since both terms scale by the same factor. Two MEDIUM findings addressed: (1) documented in the module docstring that a `forward_fn` insensitive to both `lr` and `z` produces a misleading `0` ("fully evidence-driven") rather than the more accurate "indeterminate" — the `1e-8` guard only prevents NaN/Inf, it doesn't distinguish the cases — and pinned that documented behavior with `test_fully_insensitive_forward_fn_returns_documented_zero_not_nan`; (2) added `test_result_is_invariant_to_eps_choice`, a regression guard specifically against reintroducing a Task-5-style asymmetric-eps bug in this file (the intended "known-correct" reference implementation), plus `test_equal_sensitivity_gives_mid_range_reliance` strengthening the existing valid-range test to also check calibration at the midpoint.
+
 ## Next up
 
-Task 7: Signal S2 — generative-prior over-reliance (`docs/superpowers/plans/2026-08-25-chasr-phase1-core-pipeline.md`, line ~779) — standalone finite-difference utility (the real pipeline already uses Task 5's `estimate_prior_reliance_map`); should be a small, GPU-free-to-test module.
+Task 8: Blind degradation kernel estimator (`docs/superpowers/plans/2026-08-25-chasr-phase1-core-pipeline.md`, line ~878) — a MANet-style estimator for Signal S3 (degradation-model mismatch); likely the first task in this batch needing an actual trained/trainable component rather than pure signal-processing math, so check its scope carefully before starting.
