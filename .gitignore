@@ -227,3 +227,6 @@ checkpoints/
 *.pth
 *.ckpt
 *.safetensors
+
+# generated demo/smoke-test images, not source
+outputs/
