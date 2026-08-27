@@ -230,3 +230,13 @@ checkpoints/
 
 # generated demo/smoke-test images, not source
 outputs/
+
+# LaTeX build artifacts (main.pdf and figures/ are committed; these are regenerable)
+manuscript/*.aux
+manuscript/*.bbl
+manuscript/*.blg
+manuscript/*.log
+manuscript/*.out
+manuscript/*.spl
+manuscript/*.toc
+manuscript/*.synctex.gz
