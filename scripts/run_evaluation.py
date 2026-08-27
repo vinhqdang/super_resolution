@@ -22,13 +22,14 @@ on this having been a considered choice already.
 Run: conda run -n py313 python scripts/run_evaluation.py
 """
 import glob
+import os
 
 import numpy as np
 import torch
 from PIL import Image
 from transformers import AutoModel
 
-from src.backbone.diffusion_backbone import DiffusionSRBackbone
+from src.backbone.diffusion_backbone import DEFAULT_MODEL_ID, DiffusionSRBackbone
 from src.causalbench.dataset import CausalBenchDataset
 from src.eval.attribution_metrics import mean_iou, pixel_accuracy
 from src.eval.disentanglement import signal_correlation_matrix
@@ -41,6 +42,7 @@ from src.signals.kernel_estimator import KernelEstimator
 
 HR_PATCH_SIZE = 1024  # must match DiffusionSRBackbone's fixed 16x output size
 EVAL_MAX_IMAGES = 20
+MODEL_ID = os.environ.get("CHASR_MODEL_ID", DEFAULT_MODEL_ID)
 
 
 def main():
@@ -58,7 +60,7 @@ def main():
     kernel_estimator.eval()
     feature_bank = FeatureBank(torch.load("checkpoints/feature_bank.pt", weights_only=True))
     dino_encoder = AutoModel.from_pretrained("facebook/dinov2-small").to(device).eval()
-    backbone = DiffusionSRBackbone(device=device)
+    backbone = DiffusionSRBackbone(device=device, model_id=MODEL_ID)
     fusion_head = FusionHead().to(device)
     fusion_head.load_state_dict(torch.load("checkpoints/fusion_head.pt", weights_only=True))
     fusion_head.eval()
@@ -71,15 +73,28 @@ def main():
         # TRAIN_K) — see SIGNAL_STACK_K's docstring in src/fusion/train.py.
         result = run_chasr(lr, backbone, kernel_estimator, feature_bank, dino_encoder, fusion_head, k=SIGNAL_STACK_K)
 
-        sr_np = result["sr_image"].permute(1, 2, 0).clamp(0, 1).numpy()
+        # .cpu().float(): sr_image comes straight from the real backbone
+        # (CUDA fp16), which .numpy() cannot convert directly — the stub
+        # backbone used in tests/fusion/test_infer.py returns CPU float32,
+        # so this path was never exercised until running against real data.
+        sr_np = result["sr_image"].cpu().float().permute(1, 2, 0).clamp(0, 1).numpy()
         hr_np = hr.permute(1, 2, 0).clamp(0, 1).numpy()
         psnrs.append(compute_psnr(sr_np, hr_np))
         ssims.append(compute_ssim(sr_np, hr_np))
 
-        accuracies.append(pixel_accuracy(result["cause_map"], gt_label_map))
-        ious.append(mean_iou(result["cause_map"], gt_label_map))
+        # .cpu(): cause_map comes from the real (CUDA) fusion_head forward
+        # pass while gt_label_map is CPU (straight from the Dataset) —
+        # comparing tensors on different devices raises, and this path
+        # (like sr_image above) was only ever exercised via CPU stubs before.
+        cause_map_cpu = result["cause_map"].cpu()
+        accuracies.append(pixel_accuracy(cause_map_cpu, gt_label_map))
+        ious.append(mean_iou(cause_map_cpu, gt_label_map))
 
-        all_signals.append(result["signal_stack"].reshape(4, -1))  # (4, H*W) per image
+        # .float(): guards the disentanglement correlation matmul below
+        # against fp16 precision loss/overflow when accumulating across
+        # ~20M elements (EVAL_MAX_IMAGES x 1024x1024) on hardware without
+        # fp32 tensor-core accumulation.
+        all_signals.append(result["signal_stack"].reshape(4, -1).cpu().float())  # (4, H*W) per image
 
     print(f"PSNR: {np.mean(psnrs):.2f}")
     print(f"SSIM: {np.mean(ssims):.4f}")

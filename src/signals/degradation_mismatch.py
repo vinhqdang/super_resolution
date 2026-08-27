@@ -36,6 +36,17 @@ _MAX_EXPECTED_DISTANCE = (MISMATCH_SIGMA_RANGE[1] - STANDARD_SIGMA_RANGE[1]) + M
 
 
 def compute_degradation_mismatch(estimator, lr_patch: torch.Tensor) -> float:
+    # Match lr_patch to the estimator's device when it's a real nn.Module
+    # (KernelEstimator) — callers (build_signal_stack, run_chasr) pass the
+    # caller's lr_patch as-is, which is CPU when it came straight from a
+    # Dataset, while the estimator is typically moved to CUDA. Test doubles
+    # (e.g. _FixedEstimator) have no .parameters(), so this is a no-op for
+    # them rather than an error.
+    if hasattr(estimator, "parameters"):
+        try:
+            lr_patch = lr_patch.to(device=next(estimator.parameters()).device)
+        except StopIteration:
+            pass
     out = estimator(lr_patch)
     sigma_x, sigma_y, theta, _noise_sigma = out[0].tolist()  # noise_sigma unused, see module docstring
     sigma_distance = max(0.0, max(sigma_x, sigma_y) - STANDARD_SIGMA_RANGE[1])

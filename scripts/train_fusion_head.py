@@ -13,6 +13,13 @@ precompute pass below; 40 images x 4 procedures x k=2 x 5 calls = 1600
 diffusion calls, roughly 2-3 hours one-time on an 8GB laptop GPU. Raise
 these only once Phase 1 numbers exist and you're deliberately scaling up.
 
+Set CHASR_MODEL_ID to a local pre-downloaded snapshot directory (absolute
+path — see src/backbone/diffusion_backbone.py's DiffusionSRBackbone
+docstring for why relative paths are unsafe) if huggingface_hub's own
+downloader stalls on your network even though direct HTTP/curl works —
+see scripts/smoke_test_backbone.py for the same override and PROGRESS.md
+for the observed stall.
+
 Run: conda run -n py313 python scripts/train_fusion_head.py
 """
 import glob
@@ -23,7 +30,7 @@ import torch
 from PIL import Image
 from transformers import AutoModel
 
-from src.backbone.diffusion_backbone import DiffusionSRBackbone
+from src.backbone.diffusion_backbone import DEFAULT_MODEL_ID, DiffusionSRBackbone
 from src.causalbench.dataset import CausalBenchDataset
 from src.fusion.train import SIGNAL_STACK_K, precompute_signal_stacks, train
 from src.signals.distribution_shift import FeatureBank
@@ -32,6 +39,7 @@ from src.signals.kernel_estimator import KernelEstimator
 HR_PATCH_SIZE = 1024  # must match DiffusionSRBackbone's fixed 16x output size
 TRAIN_MAX_IMAGES = 40
 TRAIN_K = SIGNAL_STACK_K  # must match run_chasr's default k (src/fusion/infer.py) — see that constant's docstring
+MODEL_ID = os.environ.get("CHASR_MODEL_ID", DEFAULT_MODEL_ID)
 
 
 def main():
@@ -50,7 +58,7 @@ def main():
 
     feature_bank = FeatureBank(torch.load("checkpoints/feature_bank.pt", weights_only=True))
     dino_encoder = AutoModel.from_pretrained("facebook/dinov2-small").to(device).eval()
-    backbone = DiffusionSRBackbone(device=device)
+    backbone = DiffusionSRBackbone(device=device, model_id=MODEL_ID)
 
     cached_items = precompute_signal_stacks(
         dataset, backbone, kernel_estimator, feature_bank, dino_encoder, k=TRAIN_K, cache_path="checkpoints/causalbench_signal_cache.pt"
