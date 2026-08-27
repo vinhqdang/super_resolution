@@ -32,7 +32,13 @@ def main():
 
     hr_images = load_hr_images(args.data_dir)
     dataset = KernelEstimatorDataset(hr_images)
-    loader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=2)
+    # num_workers=0: with Windows' spawn-based multiprocessing (no fork/COW),
+    # num_workers>0 requires pickling and IPC-transferring the entire Dataset
+    # object — including its full hr_images list (~500 x 256x256x3 float32,
+    # ~400MB) — to every worker process before the first batch, which was
+    # observed to take minutes despite an otherwise-fast, CPU-cheap dataset.
+    # Single-process loading is faster here for a dataset this size.
+    loader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=0)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = KernelEstimator().to(device)
