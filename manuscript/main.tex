@@ -28,7 +28,7 @@
 \ead{vinh.dq4@buv.edu.vn}
 
 \begin{abstract}
-Extreme super-resolution (xSR, 8$\times$/16$\times$ and beyond) is severely ill-posed: the diffusion priors that make plausible upscaling possible at these factors also make some degree of hallucinated, plausible-but-false detail unavoidable. Existing work measures how much a super-resolved image hallucinates but stops short of explaining why a given region hallucinates, which limits its usefulness for forensic, legal, and task-driven applications that need to know whether a specific detail can be trusted. We introduce CHASR, a causal attribution module that decomposes hallucination risk at the pixel level into four distinguishable causes: inherent ill-posedness, over-reliance on the generative prior, degradation-model mismatch, and distribution shift relative to the backbone's training data. CHASR wraps a frozen chained diffusion backbone (unmodified, so all training cost stays in the attribution module) with four lightweight signal estimators and a small trained fusion head that outputs a per-pixel five-way cause classification plus a calibrated reliability score. We construct xSR-CausalBench, a synthetic benchmark that injects each of the four causes under controlled conditions with weak per-pixel ground-truth labels, extending an existing two-way controllable-hallucination construction to four causes. A first end-to-end validation at 16$\times$ on real photographs (40 training images, 20 held-out evaluation images) shows the fusion head reaches 48.4\% five-way pixel attribution accuracy, comfortably above a uniform-random baseline (20\%) but only 0.7 points above the class-imbalanced benchmark's own empirical majority-class baseline (47.7\%), a gap this paper attributes to unweighted training on an imbalanced synthetic benchmark at pilot scale rather than to the architecture. A disentanglement analysis confirms a factor-entanglement risk anticipated before any data was collected: the null-space-uncertainty signal and the prior-reliance signal correlate at $r=0.267$, consistent with the intuition that severe ill-posedness itself drives the generative prior to fill in more of the image. We report this pilot result honestly, including where the fusion head's numbers are weak and why, alongside the architecture and the synthetic benchmark construction. The paper's central contribution is the causal taxonomy and the attribution framework it enables, not a fidelity leaderboard entry.
+Extreme super-resolution (xSR, 8$\times$/16$\times$ and beyond) is severely ill-posed: the diffusion priors that make plausible upscaling possible also make some hallucinated, plausible-but-false detail unavoidable. Existing work measures how much a super-resolved image hallucinates but not why, which limits its usefulness for forensic and task-driven applications needing to know whether a detail can be trusted. We introduce CHASR, a causal attribution module decomposing hallucination risk at the pixel level into four distinguishable causes: inherent ill-posedness, over-reliance on the generative prior, degradation-model mismatch, and distribution shift from the backbone's training data. CHASR wraps a frozen chained diffusion backbone with four lightweight signal estimators and a small trained fusion head producing a per-pixel five-way cause classification plus a calibrated reliability score. We construct xSR-CausalBench, a synthetic benchmark injecting each cause under controlled conditions with weak per-pixel ground truth, extending an existing two-way controllable-hallucination construction to four causes. A first end-to-end validation at 16$\times$ on real photographs (40 training, 20 held-out images) shows the fusion head reaches 48.4\% five-way pixel attribution accuracy, above a uniform-random baseline (20\%) but only 0.7 points above the benchmark's empirical majority-class baseline (47.7\%), a gap attributed to unweighted training on an imbalanced benchmark at pilot scale rather than the architecture. A disentanglement analysis confirms an anticipated factor-entanglement risk: the null-space-uncertainty and prior-reliance signals correlate at $r=0.267$, consistent with severe ill-posedness driving prior reliance. We report this pilot honestly, including where the numbers are weak. The central contribution is the causal taxonomy and attribution framework, not fidelity leaderboard performance.
 \end{abstract}
 
 \begin{keyword}
@@ -293,17 +293,17 @@ The implementation, including the degradation pipelines, the four signal estimat
 \section*{Ethics Declaration}
 This study used only publicly available image data (DIV2K) and did not involve human subjects, personal data, or any content requiring ethics board review.
 
-\section*{Author Contributions}
-Q.D. conceived the study, designed the architecture and evaluation protocol, implemented the system, ran the experiments, and wrote the manuscript.
+\section*{Author Contributions (CRediT)}
+Q.D.: Conceptualization, Methodology, Software, Validation, Formal analysis, Investigation, Data curation, Writing -- original draft, Writing -- review \& editing.
 
-\section*{Conflict of Interest Statement}
-The author declares no conflict of interest.
+\section*{Declaration of Competing Interest}
+The author declares no competing financial interests or personal relationships that could have appeared to influence the work reported in this paper.
 
 \section*{Funding}
-This research received no external funding.
+This research did not receive any specific grant from funding agencies in the public, commercial, or not-for-profit sectors.
 
-\section*{AI Disclosure}
-Portions of the software implementation and manuscript preparation for this work were assisted by AI-based coding and writing tools. All experimental results reported are from the author's own code executed on the author's own hardware against the stated public dataset; all claims, interpretations, and conclusions were reviewed and are the responsibility of the author.
+\section*{Declaration of generative AI and AI-assisted technologies in the manuscript preparation process}
+During the preparation of this work the author used Claude (Anthropic) and Claude Code in order to assist with software implementation, experiment execution, and drafting and revising the manuscript text. After using this tool, the author reviewed and edited the content as needed and takes full responsibility for the content of the published article.
 
 \bibliography{references}
 

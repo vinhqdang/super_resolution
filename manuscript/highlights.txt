@@ -1,0 +1,5 @@
+Introduces CHASR: causal attribution of hallucination in extreme super-resolution
+Decomposes hallucination into four causes: ill-posedness, prior, mismatch, shift
+xSR-CausalBench provides synthetic per-pixel ground truth for all four causes
+Fusion head reaches 48.4% five-way attribution accuracy at real 16x upscaling
+Reports factor entanglement (r=0.267) and baseline margin honestly, not selectively
