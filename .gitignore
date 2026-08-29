@@ -240,3 +240,5 @@ manuscript/*.out
 manuscript/*.spl
 manuscript/*.toc
 manuscript/*.synctex.gz
+manuscript/*.fdb_latexmk
+manuscript/*.fls
