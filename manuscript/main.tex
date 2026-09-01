@@ -11,6 +11,10 @@
 \usepackage{xcolor}
 \usepackage{tikz}
 \usepackage{placeins}
+\usepackage{seqsplit}
+\usepackage[ruled, vlined, linesnumbered]{algorithm2e}
+\SetKwInOut{Input}{Input}
+\SetKwInOut{Output}{Output}
 \usetikzlibrary{arrows.meta, positioning, fit, backgrounds}
 
 \modulolinenumbers[5]
@@ -64,7 +68,7 @@ This paper's contribution is fourfold: a four-way causal taxonomy for extreme su
 
 Classical blind super-resolution treats the degradation kernel as an unknown to be estimated jointly with, or prior to, the restoration itself. KernelGAN~\citep{bell2019kernelgan} estimates a per-image blur kernel using an internal GAN trained purely on patch recurrence within the low-resolution image, requiring no external training data. MANet~\citep{liang2021manet} instead learns a mutual affine network that estimates spatially variant kernels directly, relaxing the common assumption of a single global kernel per image. DASR~\citep{wang2021dasr} sidesteps explicit kernel parameterization entirely, learning an unsupervised degradation representation via contrastive learning and conditioning the restoration network on it directly. This lineage of blind kernel estimation is a component CHASR reuses directly: Signal 3 (degradation-model mismatch) is computed by an independent blind estimator trained on both the backbone's assumed degradation pool and an out-of-distribution pool, then compared against the backbone's training assumptions, rather than proposed here as a new estimation method.
 
-Diffusion models have displaced GAN-based approaches as the dominant paradigm for photorealistic super-resolution at moderate factors. StableSR~\citep{wang2024stablesr} adapts a pretrained text-to-image diffusion prior for real-world restoration through a time-aware encoder and a controllable feature-wrapping module. SeeSR~\citep{wu2024seesr} conditions the diffusion process on semantic tags extracted from the degraded input, improving fidelity to the true image content rather than merely to a plausible one. PASD~\citep{yang2024pasd} introduces pixel-aware cross-attention so that the diffusion process attends explicitly to which regions the input actually constrains. Chain-of-Zoom~\citep{kim2025chainofzoom} pushes this diffusion-prior paradigm to substantially more extreme factors by reformulating extreme super-resolution as an autoregressive sequence of moderate zoom-in steps guided by vision-language model text prompts, each step handled by an off-the-shelf 4$\times$ diffusion model rather than a single model retrained for the full factor. CHASR's backbone follows this same chained-hop principle for reaching 16$\times$ from a 4$\times$ checkpoint, though for reproducibility on modest hardware it wraps the publicly downloadable \texttt{stable-diffusion-x4-upscaler} checkpoint directly rather than a VLM-guided variant, trading some of Chain-of-Zoom's content-awareness for a fully open, easily reproduced pipeline. Real-ESRGAN~\citep{wang2021realesrgan} remains the standard GAN-based reference point for real-world super-resolution trained entirely on synthetic degradations, and Section~\ref{sec:experiments} reports it as a real fidelity baseline, chained to the same 16$\times$ factor as CHASR's own backbone, rather than only citing it here. Two concurrent lines of work couple diffusion-based super-resolution directly to an uncertainty signal rather than treating uncertainty as an afterthought: UGDiff~\citep{wang2026ugdiff} estimates per-latent-feature reconstruction uncertainty and uses it to steer high-frequency detail restoration toward high-uncertainty regions while leaving confident regions untouched, and QUSR~\citep{yin2026qusr} adapts injected diffusion noise strength to local uncertainty alongside a multimodal-LLM-based quality prior, under unknown, spatially varying degradation. Both use uncertainty as a single scalar steering signal for where to generate more aggressively; CHASR's Signal 1 measures a structurally similar null-space quantity but treats it as one of four distinguishable causes to attribute after generation rather than a knob to steer generation with, a diagnostic rather than a generative use of the same underlying idea.
+Diffusion models have displaced GAN-based approaches as the dominant paradigm for photorealistic super-resolution at moderate factors. StableSR~\citep{wang2024stablesr} adapts a pretrained text-to-image diffusion prior for real-world restoration through a time-aware encoder and a controllable feature-wrapping module. SeeSR~\citep{wu2024seesr} conditions the diffusion process on semantic tags extracted from the degraded input, improving fidelity to the true image content rather than merely to a plausible one. PASD~\citep{yang2024pasd} introduces pixel-aware cross-attention so that the diffusion process attends explicitly to which regions the input actually constrains. Chain-of-Zoom~\citep{kim2025chainofzoom} pushes this diffusion-prior paradigm to substantially more extreme factors by reformulating extreme super-resolution as an autoregressive sequence of moderate zoom-in steps guided by vision-language model text prompts, each step handled by an off-the-shelf 4$\times$ diffusion model rather than a single model retrained for the full factor. CHASR's backbone follows this same chained-hop principle for reaching 16$\times$ from a 4$\times$ checkpoint, though for reproducibility on modest hardware it wraps the publicly downloadable \texttt{\seqsplit{stable-diffusion-x4-upscaler}} checkpoint directly rather than a VLM-guided variant, trading some of Chain-of-Zoom's content-awareness for a fully open, easily reproduced pipeline. Real-ESRGAN~\citep{wang2021realesrgan} remains the standard GAN-based reference point for real-world super-resolution trained entirely on synthetic degradations, and Section~\ref{sec:experiments} reports it as a real fidelity baseline, chained to the same 16$\times$ factor as CHASR's own backbone, rather than only citing it here. Two concurrent lines of work couple diffusion-based super-resolution directly to an uncertainty signal rather than treating uncertainty as an afterthought: UGDiff~\citep{wang2026ugdiff} estimates per-latent-feature reconstruction uncertainty and uses it to steer high-frequency detail restoration toward high-uncertainty regions while leaving confident regions untouched, and QUSR~\citep{yin2026qusr} adapts injected diffusion noise strength to local uncertainty alongside a multimodal-LLM-based quality prior, under unknown, spatially varying degradation. Both use uncertainty as a single scalar steering signal for where to generate more aggressively; CHASR's Signal 1 measures a structurally similar null-space quantity but treats it as one of four distinguishable causes to attribute after generation rather than a knob to steer generation with, a diagnostic rather than a generative use of the same underlying idea.
 
 \subsection{Measuring hallucination in generative restoration}
 
@@ -126,18 +130,78 @@ CHASR is a diagnostic module, not a new super-resolution architecture. It wraps 
 \subsection{Frozen backbone}
 \label{sec:backbone}
 
-The backbone reaches 16$\times$ from 64$\times$64 low-resolution patches through two chained 4$\times$ diffusion hops, using the publicly downloadable \texttt{stabilityai/stable-diffusion-x4-upscaler} checkpoint at each hop for full reproducibility on a single consumer GPU. The first hop upscales the full 64$\times$64 patch to 256$\times$256. The second hop is applied per-tile, splitting the 256$\times$256 intermediate into four 128$\times$128 tiles, each independently upscaled to 512$\times$512 and stitched back into the final 1024$\times$1024 output, which keeps peak memory within an 8~GB budget at the cost of a faint seam artifact at tile boundaries that does not affect the causal signals computed here. After every hop, the output is projected via the DDNM range-null decomposition~\citep{wang2023ddnm} against the true low-resolution observation at that hop's scale, using the closed-form projection for an average-pooling degradation operator: within every scale-by-scale block, the block is replaced by itself minus its own mean plus the corresponding observed pixel. This guarantees every sample the backbone returns is exactly consistent with the input, at every hop, which is what makes the variance across independently sampled outputs attributable specifically to null-space content rather than to the model occasionally violating the observation.
+The backbone reaches 16$\times$ from 64$\times$64 low-resolution patches through two chained 4$\times$ diffusion hops, using the publicly downloadable checkpoint \texttt{\seqsplit{stable-diffusion-x4-upscaler}} (hosted on the Hugging Face Hub under the \texttt{stabilityai} organization) at each hop for full reproducibility on a single consumer GPU. The first hop upscales the full 64$\times$64 patch to 256$\times$256. The second hop is applied per-tile, splitting the 256$\times$256 intermediate into four 128$\times$128 tiles, each independently upscaled to 512$\times$512 and stitched back into the final 1024$\times$1024 output, which keeps peak memory within an 8~GB budget at the cost of a faint seam artifact at tile boundaries that does not affect the causal signals computed here. After every hop, the output is projected via the DDNM range-null decomposition~\citep{wang2023ddnm} against the true low-resolution observation at that hop's scale, using the closed-form projection for an average-pooling degradation operator: within every scale-by-scale block, the block is replaced by itself minus its own mean plus the corresponding observed pixel. This guarantees every sample the backbone returns is exactly consistent with the input, at every hop, which is what makes the variance across independently sampled outputs attributable specifically to null-space content rather than to the model occasionally violating the observation. Algorithm~\ref{alg:sampling} states this procedure precisely.
+
+\begin{algorithm}[h]
+\SetAlgoLined
+\Input{Low-resolution patch $y \in \mathbb{R}^{64\times64\times3}$, sample count $K$}
+\Output{$K$ degradation-consistent 16$\times$ super-resolved samples $\{\hat{x}_1, \dots, \hat{x}_K\}$}
+\For{$k \gets 1$ \KwTo $K$}{
+    $z_1 \gets \mathrm{DiffusionHop}_1(y, \mathrm{seed}=k)$ \tcp*{$64\times64 \to 256\times256$}
+    $z_1 \gets \mathrm{DDNM\_project}(z_1, y, \mathrm{scale}=4)$ \tcp*{exact consistency at hop 1's scale}
+    \For{$\mathrm{tile} \in \mathrm{split}(z_1, 4)$}{
+        $t \gets \mathrm{DiffusionHop}_2(\mathrm{tile}, \mathrm{seed}=k)$ \tcp*{$128\times128 \to 512\times512$}
+        $t \gets \mathrm{DDNM\_project}(t, \mathrm{tile}, \mathrm{scale}=4)$\;
+        $\mathrm{stitch}(t)$ into $z_2 \in \mathbb{R}^{1024\times1024\times3}$\;
+    }
+    $\hat{x}_k \gets \mathrm{DDNM\_project}(z_2, y, \mathrm{scale}=16)$ \tcp*{final consistency check against $y$ directly}
+}
+\Return{$\{\hat{x}_1, \dots, \hat{x}_K\}$}
+\caption{Chained, DDNM-projected 16$\times$ sampling}
+\label{alg:sampling}
+\end{algorithm}
 
 \subsection{Four causal signals}
 \label{sec:signals}
 
-\textbf{Signal 1: null-space uncertainty.} The backbone is sampled $K$ times with different random seeds, each sample independently DDNM-projected as above. The pixelwise, channel-averaged unbiased variance across the $K$ samples is Signal 1: $S_1(p) = \mathrm{Var}_k[\hat{x}_k(p)]$. Because data consistency is fixed by construction, the samples can only differ in their null-space content, so high variance at a pixel means the ill-posedness at that pixel is large enough that the model genuinely could not have determined a unique answer from the evidence, independent of whether the model itself is well-calibrated.
+\textbf{Signal 1: null-space uncertainty.} The backbone is sampled $K$ times with different random seeds, each sample independently DDNM-projected as above. The pixelwise, channel-averaged unbiased variance across the $K$ samples is
+\begin{equation}
+S_1(p) = \mathrm{Var}_k\!\left[\hat{x}_k(p)\right].
+\label{eq:s1}
+\end{equation}
+Because data consistency is fixed by construction, the samples can only differ in their null-space content, so high variance at a pixel means the ill-posedness at that pixel is large enough that the model genuinely could not have determined a unique answer from the evidence, independent of whether the model itself is well-calibrated.
 
-\textbf{Signal 2: generative-prior over-reliance.} This signal asks a different question: even where evidence is available, did the model use it? For the frozen diffusion backbone, whose stochasticity is a discrete random seed rather than a continuous latent, this is estimated by finite differences at the first (256$\times$256) hop: the raw, pre-projection output's sensitivity to a small perturbation of the low-resolution evidence ($g_{\text{evidence}}$) is compared against its sensitivity to a full reseed at fixed evidence ($g_{\text{prior}}$), and $S_2(p) = g_{\text{prior}}(p) / (g_{\text{prior}}(p) + g_{\text{evidence}}(p) + \varepsilon)$. Both terms are compared as raw output-magnitude changes on the same units, rather than as normalized derivatives, because normalizing only the continuous perturbation by its step size while leaving the discrete reseed unnormalized would bias the ratio toward zero regardless of the model's actual behavior. A general finite-difference formulation for a continuously perturbable forward function and latent is also implemented as a standalone, independently tested utility for future backbones with a true continuous latent, but is not used in the real pipeline for exactly this reason.
+\textbf{Signal 2: generative-prior over-reliance.} This signal asks a different question: even where evidence is available, did the model use it? For the frozen diffusion backbone, whose stochasticity is a discrete random seed rather than a continuous latent, this is estimated by finite differences at the first (256$\times$256) hop: the raw, pre-projection output's sensitivity to a small perturbation of the low-resolution evidence ($g_{\text{evidence}}$) is compared against its sensitivity to a full reseed at fixed evidence ($g_{\text{prior}}$),
+\begin{equation}
+S_2(p) = \frac{g_{\text{prior}}(p)}{g_{\text{prior}}(p) + g_{\text{evidence}}(p) + \varepsilon}.
+\label{eq:s2}
+\end{equation}
+Both terms are compared as raw output-magnitude changes on the same units, rather than as normalized derivatives, because normalizing only the continuous perturbation by its step size while leaving the discrete reseed unnormalized would bias the ratio toward zero regardless of the model's actual behavior. A general finite-difference formulation for a continuously perturbable forward function and latent is also implemented as a standalone, independently tested utility for future backbones with a true continuous latent, but is not used in the real pipeline for exactly this reason.
 
-\textbf{Signal 3: degradation-model mismatch.} An independent, lightweight convolutional network is trained to regress a blur kernel's spatial parameters (anisotropic sigma in two axes, rotation angle) and additive noise level directly from a 64$\times$64 patch, trained on a 50/50 mixture of the backbone's assumed in-distribution degradation pool and an out-of-distribution pool with a disjoint, larger sigma range and non-zero rotation. At inference, this estimator re-examines the actual input patch and produces $\hat\theta(p)$; Signal 3 scores how far the estimate falls outside the assumed pool, normalized against the out-of-distribution pool's own worst-case range so the signal saturates at 1.0 only at genuinely extreme mismatch rather than prematurely. A high value here means the backbone is being asked to restore an image degraded in a way it was never exposed to during training, independent of whether the content itself is familiar.
+\textbf{Signal 3: degradation-model mismatch.} An independent, lightweight convolutional network is trained to regress a blur kernel's spatial parameters (anisotropic sigma $(\hat\sigma_x, \hat\sigma_y)$, rotation angle $\hat\theta$) and additive noise level directly from a 64$\times$64 patch, trained on a 50/50 mixture of the backbone's assumed in-distribution degradation pool (upper sigma bound $\sigma_{\max}$, zero rotation) and an out-of-distribution pool with a disjoint, larger sigma range and non-zero rotation. At inference, this estimator re-examines the actual input patch and scores how far the estimate falls outside the assumed pool,
+\begin{equation}
+S_3 = \min\!\left(1,\; \frac{\max(0,\, \max(\hat\sigma_x, \hat\sigma_y) - \sigma_{\max}) + |\hat\theta|}{d_{\max}}\right),
+\label{eq:s3}
+\end{equation}
+normalized by the out-of-distribution pool's own worst-case raw distance $d_{\max}$ so the signal saturates at 1.0 only at genuinely extreme mismatch rather than prematurely. $S_3$ is a single scalar per input patch, broadcast uniformly to every pixel, since the degradation kernel is assumed spatially constant within one patch. A high value here means the backbone is being asked to restore an image degraded in a way it was never exposed to during training, independent of whether the content itself is familiar.
 
-\textbf{Signal 4: distribution shift.} A frozen, self-supervised DINOv2 encoder~\citep{oquab2024dinov2} extracts patch features from the super-resolved output, and their $k$-nearest-neighbor distance to a reference bank of features extracted once from the backbone's training-distribution images is computed. Because a sparse reference bank in a high-dimensional feature space suffers a curse-of-dimensionality effect at $k>1$, where a near-duplicate query's second through $k$-th neighbors are effectively generic points at a roughly constant distance that washes out fine-grained separation, the raw distance is rescaled by the bank's own internal typical $k$-nearest-neighbor distance among its own members, producing a self-calibrated score without assuming a fixed feature-space magnitude in advance.
+\textbf{Signal 4: distribution shift.} A frozen, self-supervised DINOv2 encoder~\citep{oquab2024dinov2} extracts a feature vector $f$ from the super-resolved output, and its $k$-nearest-neighbor distance $d_{\mathrm{kNN}}(f, \mathcal{B})$ to a reference bank $\mathcal{B}$ of features extracted once from the backbone's training-distribution images is computed. Because a sparse reference bank in a high-dimensional feature space suffers a curse-of-dimensionality effect at $k>1$, where a near-duplicate query's second through $k$-th neighbors are effectively generic points at a roughly constant distance that washes out fine-grained separation, the raw distance is rescaled by the bank's own internal typical $k$-nearest-neighbor distance $s(\mathcal{B})$ among its own members,
+\begin{equation}
+S_4 = \frac{d_{\mathrm{kNN}}(f, \mathcal{B})}{d_{\mathrm{kNN}}(f, \mathcal{B}) + s(\mathcal{B})},
+\label{eq:s4}
+\end{equation}
+producing a self-calibrated score in $[0,1)$ without assuming a fixed feature-space magnitude in advance. Like $S_3$, $S_4$ is computed once per output image and broadcast to every pixel.
+
+Algorithm~\ref{alg:signals} collects Equations~\ref{eq:s1}--\ref{eq:s4} in one place, making explicit which quantities each signal shares (all four read from the same $K$-sample set of Algorithm~\ref{alg:sampling}, and $S_2$ additionally requires two extra single-hop calls beyond it) and which are independently pretrained rather than computed fresh per pixel ($S_3$'s kernel estimator $E_\theta$ and $S_4$'s DINOv2 encoder $\phi$ are both frozen, queried here, not trained here).
+
+\begin{algorithm}[h]
+\SetAlgoLined
+\Input{LR patch $y$, samples $\{\hat{x}_1,\dots,\hat{x}_K\}$ from Algorithm~\ref{alg:sampling}, kernel estimator $E_\theta$, DINOv2 encoder $\phi$, reference bank $\mathcal{B}$}
+\Output{Signal stack $[S_1, S_2, S_3, S_4] \in [0,1]^{4 \times 1024 \times 1024}$}
+$S_1 \gets \mathrm{Var}_k[\hat{x}_k]$ via Eq.~\ref{eq:s1}, averaged over channels, normalized to $[0,1]$\;
+$h_0 \gets \mathrm{DiffusionHop}_1(y, \mathrm{seed}=0)$\;
+$h_{\mathrm{ev}} \gets \mathrm{DiffusionHop}_1(y + \epsilon \cdot \mathcal{N}(0,1), \mathrm{seed}=0)$ \tcp*{evidence perturbation, fixed seed}
+$h_{\mathrm{pr}} \gets \mathrm{DiffusionHop}_1(y, \mathrm{seed}=1)$ \tcp*{prior perturbation, fixed evidence}
+$g_{\mathrm{evidence}} \gets |h_{\mathrm{ev}} - h_0|$, $g_{\mathrm{prior}} \gets |h_{\mathrm{pr}} - h_0|$\;
+$S_2 \gets$ Eq.~\ref{eq:s2}, upsampled to $1024\times1024$\;
+$(\hat\sigma_x, \hat\sigma_y, \hat\theta, \cdot) \gets E_\theta(y)$\;
+$S_3 \gets$ Eq.~\ref{eq:s3}, broadcast to all pixels\;
+$f \gets \phi(\hat{x}_1)$ \tcp*{DINOv2 features of the first sample}
+$S_4 \gets$ Eq.~\ref{eq:s4}, broadcast to all pixels\;
+\Return{$[S_1, S_2, S_3, S_4]$}
+\caption{Four-signal computation}
+\label{alg:signals}
+\end{algorithm}
 
 \subsection{Fusion head}
 \label{sec:fusion}
@@ -157,7 +221,40 @@ Training and evaluating the fusion head requires per-pixel labels for which caus
 
 \emph{Distribution-shift-dominant} blends a small patch, 64$\times$64 pixels (0.4\% of the 1024$\times$1024 image area), into an otherwise normal image before applying the standard degradation model, then labels exactly the blended region distribution-shift-dominant and the remainder reliable. The patch content is drawn from a pool of natural images held disjoint from every procedure's source images (never from the same image being degraded), rather than from any exotic or synthetically out-of-domain texture source; this is a proxy for distribution shift using ordinary but contextually foreign content, not a claim that the patch content is itself unusual in any absolute sense, and Section~\ref{sec:discussion} treats the strength of this proxy as an open question.
 
-Each source image, drawn from a held-out validation split, is passed through all four procedures independently and deterministically per index, so the benchmark is reproducible given a fixed seed. Two of the four procedures assign a label from the physical operation applied (ill-posedness and degradation-mismatch, both whole-image), while the other two assign a label from where evidence was deliberately altered relative to the standard degradation (prior-reliance and distribution-shift, both region-local); this means the same standard degradation operator underlies the ill-posedness procedure's whole-image ill-posed label and the prior-reliance procedure's remainder-region reliable label, with the two procedures differentiated only by whether the sub-region evidence was additionally destroyed before that shared degradation was applied. This is a real construct-validity limitation, not a subtlety hidden from the reader: the ground-truth label reflects which procedure generated the pixel, not an independently verified causal judgment about that pixel in isolation, and Section~\ref{sec:discussion} returns to it directly. These four causes were not expected to separate perfectly; Section~\ref{sec:discussion} reports the resulting entanglement directly.
+Each source image, drawn from a held-out validation split, is passed through all four procedures independently and deterministically per index, so the benchmark is reproducible given a fixed seed. Two of the four procedures assign a label from the physical operation applied (ill-posedness and degradation-mismatch, both whole-image), while the other two assign a label from where evidence was deliberately altered relative to the standard degradation (prior-reliance and distribution-shift, both region-local); this means the same standard degradation operator underlies the ill-posedness procedure's whole-image ill-posed label and the prior-reliance procedure's remainder-region reliable label, with the two procedures differentiated only by whether the sub-region evidence was additionally destroyed before that shared degradation was applied. This is a real construct-validity limitation, not a subtlety hidden from the reader: the ground-truth label reflects which procedure generated the pixel, not an independently verified causal judgment about that pixel in isolation, and Section~\ref{sec:discussion} returns to it directly. These four causes were not expected to separate perfectly; Section~\ref{sec:discussion} reports the resulting entanglement directly. Algorithm~\ref{alg:benchmark} states the four-procedure dispatch precisely enough to reimplement without reading the source: given a fixed per-item seed, exactly one of the four procedures runs, deterministically, so re-generating the benchmark from the same (image list, seed) pair reproduces every pixel of every label mask exactly.
+
+\begin{algorithm}[h]
+\SetAlgoLined
+\Input{HR source image $x$, OOD patch pool $\mathcal{P}$, procedure $c \in \{$ill\_posed, prior\_reliance, mismatch, distribution\_shift$\}$, seed $s$}
+\Output{LR/HR pair $(y, x')$, per-pixel label map $L \in \{0,\dots,4\}^{H\times W}$}
+$\mathrm{rng} \gets \mathrm{Generator}(s)$\;
+\Switch{$c$}{
+    \Case{ill\_posed}{
+        $y \gets \mathrm{degrade\_standard}(x, 16, \mathrm{rng})$; $x' \gets x$\;
+        $L \gets \mathrm{ILL\_POSED}$ everywhere\;
+    }
+    \Case{prior\_reliance}{
+        $(p_h, p_w) \gets (0.3H, 0.3W)$; $(y_0, x_0) \gets$ uniform random valid offset\;
+        $\tilde{x} \gets x$ with region $[y_0{:}y_0{+}p_h,\, x_0{:}x_0{+}p_w]$ set to $0$\;
+        $y \gets \mathrm{degrade\_standard}(\tilde{x}, 16, \mathrm{rng})$; $x' \gets x$\;
+        $L \gets \mathrm{RELIABLE}$ everywhere, then $\mathrm{PRIOR\_RELIANCE}$ in that region\;
+    }
+    \Case{mismatch}{
+        $y \gets \mathrm{degrade\_mismatch}(x, 16, \mathrm{rng})$ \tcp*{OOD kernel: $\sigma$ above standard range, $\theta \neq 0$}
+        $x' \gets x$; $L \gets \mathrm{DEGRADATION\_MISMATCH}$ everywhere\;
+    }
+    \Case{distribution\_shift}{
+        $p \gets \mathcal{P}[\mathrm{image\_index} \bmod |\mathcal{P}|]$ \tcp*{64$\times$64 patch, round-robin}
+        $(y_0, x_0) \gets$ uniform random valid offset for $p$\;
+        $\tilde{x} \gets x$ with region $[y_0{:}y_0{+}64,\, x_0{:}x_0{+}64]$ replaced by $p$\;
+        $y \gets \mathrm{degrade\_standard}(\tilde{x}, 16, \mathrm{rng})$; $x' \gets \tilde{x}$\;
+        $L \gets \mathrm{RELIABLE}$ everywhere, then $\mathrm{DISTRIBUTION\_SHIFT}$ in that region\;
+    }
+}
+\Return{$(y, x'), L$}
+\caption{xSR-CausalBench sample construction}
+\label{alg:benchmark}
+\end{algorithm}
 
 \FloatBarrier
 \section{Experiments}
@@ -171,7 +268,7 @@ This scale is deliberately modest and is reported as such rather than disguised.
 
 \subsection{Fidelity}
 
-Table~\ref{tab:fidelity} reports PSNR, SSIM, and LPIPS~\citep{zhang2018lpips} between the super-resolved output and the true high-resolution image, averaged over the same held-out evaluation items used throughout Section~\ref{sec:experiments}, for CHASR's frozen diffusion backbone and, as a real fidelity comparison point, Real-ESRGAN~\citep{wang2021realesrgan} chained twice (4$\times$ then 4$\times$, mirroring the diffusion backbone's own two-hop structure in Section~\ref{sec:backbone}) using its official public \texttt{RealESRGAN\_x4plus} weights run on the identical inputs. Consistent with the framing throughout this paper, these are context metrics rather than the headline result: they are included because the special issue's own evaluation protocol expects them, and because LPIPS specifically addresses this paper's own stated concern that PSNR/SSIM under-penalize perceptually implausible content, not because a low pixel-fidelity score at 16$\times$ from a diffusion prior is evidence of anything gone wrong. A model that reconstructs the exact original pixels of information the degradation destroyed would not be doing generative super-resolution; it would be doing something closer to lossless compression, which is not what a 16$\times$ downsampling operator permits. The gap between these numbers and the higher PSNR/SSIM figures typically reported for diffusion super-resolution at 2$\times$ to 4$\times$ factors is exactly the phenomenon this paper is about, not a competing claim to be reconciled against it.
+Table~\ref{tab:fidelity} reports PSNR, SSIM, and LPIPS~\citep{zhang2018lpips} between the super-resolved output and the true high-resolution image, averaged over the same held-out evaluation items used throughout Section~\ref{sec:experiments}, for CHASR's frozen diffusion backbone and, as a real fidelity comparison point, Real-ESRGAN~\citep{wang2021realesrgan} chained twice (4$\times$ then 4$\times$, mirroring the diffusion backbone's own two-hop structure in Section~\ref{sec:backbone}) using its official public \texttt{\seqsplit{RealESRGAN\_x4plus}} weights run on the identical inputs. Consistent with the framing throughout this paper, these are context metrics rather than the headline result: they are included because the special issue's own evaluation protocol expects them, and because LPIPS specifically addresses this paper's own stated concern that PSNR/SSIM under-penalize perceptually implausible content, not because a low pixel-fidelity score at 16$\times$ from a diffusion prior is evidence of anything gone wrong. A model that reconstructs the exact original pixels of information the degradation destroyed would not be doing generative super-resolution; it would be doing something closer to lossless compression, which is not what a 16$\times$ downsampling operator permits. The gap between these numbers and the higher PSNR/SSIM figures typically reported for diffusion super-resolution at 2$\times$ to 4$\times$ factors is exactly the phenomenon this paper is about, not a competing claim to be reconciled against it.
 
 \begin{table}[h]
 \centering
@@ -250,6 +347,7 @@ Table~\ref{tab:disentanglement} reports the Pearson correlation matrix among the
 \centering
 \caption{Pearson correlation matrix among S1–S4 on the held-out evaluation set.}
 \label{tab:disentanglement}
+\small
 \begin{tabular}{lcccc}
 \toprule
  & S1 (null-space) & S2 (prior-reliance) & S3 (mismatch) & S4 (distribution shift) \\
