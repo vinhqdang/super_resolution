@@ -46,7 +46,12 @@ def _pixel_accuracy_at_threshold(cached_items, threshold: float, predict_fn) -> 
     correct, total = 0, 0
     for signal_stack, label_map in cached_items:
         pred = predict_fn(signal_stack, threshold)
-        correct += int((pred == label_map).sum().item())
+        # label_map comes straight from CausalBenchDataset (CPU), while
+        # signal_stack (and therefore pred) is whatever device the cache
+        # was built on — CUDA when precompute_signal_stacks ran against the
+        # real backbone. Synthetic same-device tensors in this file's own
+        # unit tests never exercised this mismatch.
+        correct += int((pred == label_map.to(pred.device)).sum().item())
         total += label_map.numel()
     return correct / total if total > 0 else 0.0
 
