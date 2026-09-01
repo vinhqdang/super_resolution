@@ -127,10 +127,42 @@ CHASR is a diagnostic module, not a new super-resolution architecture. It wraps 
 \label{fig:architecture}
 \end{figure}
 
+\subsection{Problem formulation}
+\label{sec:formulation}
+
+Let $x \in [0,1]^{H \times W \times 3}$ denote a high-resolution image and $A_r$ a linear degradation operator that block-average-pools by factor $r$, so for every non-overlapping $r \times r$ block $B$,
+\begin{equation}
+(A_r x)_B = \frac{1}{r^2} \sum_{i \in B} x_i.
+\label{eq:degradation-op}
+\end{equation}
+The synthetic low-resolution observation is $y = A_r(k * x)$, where $k$ is a blur kernel applied before pooling. Every blur kernel used in this paper, whether it produces an in-distribution or out-of-distribution degradation, is drawn from the same general anisotropic Gaussian family,
+\begin{equation}
+k(u, v \,;\, \sigma_x, \sigma_y, \theta) \propto \exp\!\left(-\frac{u_\theta^2}{2\sigma_x^2} - \frac{v_\theta^2}{2\sigma_y^2}\right), \quad \begin{bmatrix} u_\theta \\ v_\theta \end{bmatrix} = \begin{bmatrix} \cos\theta & \sin\theta \\ -\sin\theta & \cos\theta \end{bmatrix}\begin{bmatrix} u \\ v \end{bmatrix},
+\label{eq:kernel}
+\end{equation}
+normalized to sum to 1 over its support; the standard (in-distribution) pool fixes $\sigma_x = \sigma_y$ and $\theta = 0$ (isotropic), while the mismatch pool draws $\sigma_x, \sigma_y$ independently from a disjoint, larger range and $\theta$ from a nonzero range (Section~\ref{sec:causalbench}), making Equation~\ref{eq:kernel} the shared parametric family Signal 3's estimator regresses $(\hat\sigma_x, \hat\sigma_y, \hat\theta)$ against.
+
+Extreme super-resolution seeks $\hat{x} \approx x$ from $y$ alone at $r = 16$, a severely underdetermined inverse problem: $A_{16}$ discards $255/256$ of the pixel-level information in $x$, so any $\hat{x}$ satisfying $A_{16}(\hat{x}) = y$ is a valid data-consistent completion regardless of whether it matches the true $x$. CHASR does not attempt to resolve this ill-posedness; it attributes it. Given the frozen backbone's output $\hat{x}$ and a fixed taxonomy of causes $\mathcal{C} = \{\texttt{ILL\_POSED}, \texttt{PRIOR\_RELIANCE}, \texttt{MISMATCH}, \texttt{DIST\_SHIFT}, \texttt{RELIABLE}\}$, the task this paper addresses is learning a per-pixel classifier
+\begin{equation}
+\hat{c}(p) = \operatorname*{arg\,max}_{c \in \mathcal{C}} \; f_\theta\!\left(S_1(p), S_2(p), S_3(p), S_4(p), L(p)\right)_c,
+\label{eq:task}
+\end{equation}
+where $S_1, \dots, S_4$ are the four causal signals defined in Section~\ref{sec:signals}, $L$ is a shallow luminance feature, and $f_\theta$ is the fusion head of Section~\ref{sec:fusion} — the only component in Equation~\ref{eq:task} with learned parameters $\theta$; every signal on its right-hand side is computed from a frozen or independently pretrained model.
+
 \subsection{Frozen backbone}
 \label{sec:backbone}
 
-The backbone reaches 16$\times$ from 64$\times$64 low-resolution patches through two chained 4$\times$ diffusion hops, using the publicly downloadable checkpoint \texttt{\seqsplit{stable-diffusion-x4-upscaler}} (hosted on the Hugging Face Hub under the \texttt{stabilityai} organization) at each hop for full reproducibility on a single consumer GPU. The first hop upscales the full 64$\times$64 patch to 256$\times$256. The second hop is applied per-tile, splitting the 256$\times$256 intermediate into four 128$\times$128 tiles, each independently upscaled to 512$\times$512 and stitched back into the final 1024$\times$1024 output, which keeps peak memory within an 8~GB budget at the cost of a faint seam artifact at tile boundaries that does not affect the causal signals computed here. After every hop, the output is projected via the DDNM range-null decomposition~\citep{wang2023ddnm} against the true low-resolution observation at that hop's scale, using the closed-form projection for an average-pooling degradation operator: within every scale-by-scale block, the block is replaced by itself minus its own mean plus the corresponding observed pixel. This guarantees every sample the backbone returns is exactly consistent with the input, at every hop, which is what makes the variance across independently sampled outputs attributable specifically to null-space content rather than to the model occasionally violating the observation. Algorithm~\ref{alg:sampling} states this procedure precisely.
+The backbone reaches 16$\times$ from 64$\times$64 low-resolution patches through two chained 4$\times$ diffusion hops, using the publicly downloadable checkpoint \texttt{\seqsplit{stable-diffusion-x4-upscaler}} (hosted on the Hugging Face Hub under the \texttt{stabilityai} organization) at each hop for full reproducibility on a single consumer GPU. The first hop upscales the full 64$\times$64 patch to 256$\times$256. The second hop is applied per-tile, splitting the 256$\times$256 intermediate into four 128$\times$128 tiles, each independently upscaled to 512$\times$512 and stitched back into the final 1024$\times$1024 output, which keeps peak memory within an 8~GB budget at the cost of a faint seam artifact at tile boundaries that does not affect the causal signals computed here. After every hop, the output is projected via the DDNM range-null decomposition~\citep{wang2023ddnm} against the true low-resolution observation at that hop's scale. For a linear degradation operator $A_r$, DDNM's general projection replaces a raw diffusion estimate $\hat{x}_\theta$ with
+\begin{equation}
+\hat{x}' = A_r^{\dagger} y + \left(I - A_r^{\dagger} A_r\right) \hat{x}_\theta,
+\label{eq:ddnm-general}
+\end{equation}
+where $A_r^{\dagger}$ is the Moore--Penrose pseudo-inverse of $A_r$: the first term fixes the range space to exactly match the observation, and the second leaves the null space, everything $A_r$ cannot see, free for the diffusion prior to fill. For the block-average-pooling operator of Equation~\ref{eq:degradation-op}, $A_r$ has orthogonal rows ($A_r A_r^\top = r^{-2} I$), so $A_r^\dagger y$ broadcasts each observed value $y_B$ uniformly across its source block, and $A_r^\dagger A_r \hat{x}_\theta$ replaces every pixel with its own block mean. Equation~\ref{eq:ddnm-general} then reduces, block by block, to
+\begin{equation}
+\hat{x}'_i = \hat{x}_{\theta,i} - \frac{1}{r^2}\sum_{j \in B} \hat{x}_{\theta,j} \; + \; y_B, \qquad \forall\, i \in B,
+\label{eq:ddnm-blockwise}
+\end{equation}
+the closed-form, per-block correction actually implemented: each pixel is shifted by the difference between its block's true observed mean and the diffusion output's own block mean. This guarantees every sample the backbone returns exactly satisfies $A_r(\hat{x}') = y$, at every hop, which is what makes the variance across independently sampled outputs attributable specifically to null-space content rather than to the model occasionally violating the observation. Algorithm~\ref{alg:sampling} states the full chained procedure, applying Equation~\ref{eq:ddnm-blockwise} at each hop's own scale.
 
 \begin{algorithm}[h]
 \SetAlgoLined
@@ -154,9 +186,14 @@ The backbone reaches 16$\times$ from 64$\times$64 low-resolution patches through
 \subsection{Four causal signals}
 \label{sec:signals}
 
-\textbf{Signal 1: null-space uncertainty.} The backbone is sampled $K$ times with different random seeds, each sample independently DDNM-projected as above. The pixelwise, channel-averaged unbiased variance across the $K$ samples is
+\textbf{Signal 1: null-space uncertainty.} The backbone is sampled $K$ times with different random seeds, each sample $\hat{x}_1, \dots, \hat{x}_K$ independently satisfying Equation~\ref{eq:ddnm-blockwise}. The pixelwise, channel-averaged unbiased sample variance across the $K$ samples,
 \begin{equation}
-S_1(p) = \mathrm{Var}_k\!\left[\hat{x}_k(p)\right].
+\bar{S}_1(p) = \frac{1}{3}\sum_{ch=1}^{3} \frac{1}{K-1}\sum_{k=1}^{K} \left(\hat{x}_k(p, ch) - \bar{x}(p, ch)\right)^2, \qquad \bar{x}(p, ch) = \frac{1}{K}\sum_{k=1}^{K}\hat{x}_k(p, ch),
+\label{eq:s1-raw}
+\end{equation}
+is then rescaled to $[0,1]$ against the theoretical maximum unbiased two-sample variance a $[0,1]$-bounded pixel value can attain (achieved when $\hat{x}_1(p)=0, \hat{x}_2(p)=1$, giving $\bar{S}_1^{\max}=0.5$),
+\begin{equation}
+S_1(p) = \min\!\left(1, \; \bar{S}_1(p) \,/\, \bar{S}_1^{\max}\right).
 \label{eq:s1}
 \end{equation}
 Because data consistency is fixed by construction, the samples can only differ in their null-space content, so high variance at a pixel means the ill-posedness at that pixel is large enough that the model genuinely could not have determined a unique answer from the evidence, independent of whether the model itself is well-calibrated.
@@ -182,13 +219,13 @@ S_4 = \frac{d_{\mathrm{kNN}}(f, \mathcal{B})}{d_{\mathrm{kNN}}(f, \mathcal{B}) +
 \end{equation}
 producing a self-calibrated score in $[0,1)$ without assuming a fixed feature-space magnitude in advance. Like $S_3$, $S_4$ is computed once per output image and broadcast to every pixel.
 
-Algorithm~\ref{alg:signals} collects Equations~\ref{eq:s1}--\ref{eq:s4} in one place, making explicit which quantities each signal shares (all four read from the same $K$-sample set of Algorithm~\ref{alg:sampling}, and $S_2$ additionally requires two extra single-hop calls beyond it) and which are independently pretrained rather than computed fresh per pixel ($S_3$'s kernel estimator $E_\theta$ and $S_4$'s DINOv2 encoder $\phi$ are both frozen, queried here, not trained here).
+Algorithm~\ref{alg:signals} collects the four signal computations (Equations~\ref{eq:s1-raw}--\ref{eq:s4}) in one place, making explicit which quantities each signal shares (all four read from the same $K$-sample set of Algorithm~\ref{alg:sampling}, and $S_2$ additionally requires two extra single-hop calls beyond it) and which are independently pretrained rather than computed fresh per pixel ($S_3$'s kernel estimator $E_\theta$ and $S_4$'s DINOv2 encoder $\phi$ are both frozen, queried here, not trained here).
 
 \begin{algorithm}[h]
 \SetAlgoLined
 \Input{LR patch $y$, samples $\{\hat{x}_1,\dots,\hat{x}_K\}$ from Algorithm~\ref{alg:sampling}, kernel estimator $E_\theta$, DINOv2 encoder $\phi$, reference bank $\mathcal{B}$}
 \Output{Signal stack $[S_1, S_2, S_3, S_4] \in [0,1]^{4 \times 1024 \times 1024}$}
-$S_1 \gets \mathrm{Var}_k[\hat{x}_k]$ via Eq.~\ref{eq:s1}, averaged over channels, normalized to $[0,1]$\;
+$S_1 \gets$ Eq.~\ref{eq:s1-raw}, then normalized via Eq.~\ref{eq:s1}\;
 $h_0 \gets \mathrm{DiffusionHop}_1(y, \mathrm{seed}=0)$\;
 $h_{\mathrm{ev}} \gets \mathrm{DiffusionHop}_1(y + \epsilon \cdot \mathcal{N}(0,1), \mathrm{seed}=0)$ \tcp*{evidence perturbation, fixed seed}
 $h_{\mathrm{pr}} \gets \mathrm{DiffusionHop}_1(y, \mathrm{seed}=1)$ \tcp*{prior perturbation, fixed evidence}
@@ -206,7 +243,12 @@ $S_4 \gets$ Eq.~\ref{eq:s4}, broadcast to all pixels\;
 \subsection{Fusion head}
 \label{sec:fusion}
 
-The four raw signals, each independently rescaled to a comparable $[0,1]$-ish range before this stage, are stacked with one shallow image-luminance feature into a five-channel input and passed through a small convolutional network: three $3\times3$ convolutional layers followed by two separate $1\times1$ heads, one producing a five-way per-pixel classification logit (four causes plus a reliable class) trained with cross-entropy against the synthetic benchmark's weak labels, the other producing a sigmoid-activated reliability score trained with binary cross-entropy against whether the ground-truth label at that pixel is the reliable class. This is the only trained component in the entire pipeline; the backbone, the kernel estimator, and the DINOv2 encoder are all frozen or independently pretrained.
+The four raw signals, each independently rescaled to a comparable $[0,1]$-ish range before this stage, are stacked with one shallow image-luminance feature into a five-channel input $\mathbf{S}(p) = [S_1(p), S_2(p), S_3(p), S_4(p), L(p)]$ and passed through a small convolutional network $f_\theta$: three $3\times3$ convolutional layers followed by two separate $1\times1$ heads, one producing a five-way per-pixel classification logit $f_\theta^{\mathrm{cause}}(\mathbf{S})(p) \in \mathbb{R}^{5}$ over $\mathcal{C}$ (four causes plus a reliable class), the other a sigmoid-activated reliability score $f_\theta^{\mathrm{rel}}(\mathbf{S})(p) \in [0,1]$. Writing $y(p) \in \mathcal{C}$ for xSR-CausalBench's ground-truth label at pixel $p$ and $\Omega$ for the set of all labeled training pixels, both heads are trained jointly by minimizing
+\begin{equation}
+\mathcal{L}(\theta) = \frac{1}{|\Omega|}\sum_{p \in \Omega} \Big[ \underbrace{-\log \operatorname{softmax}\!\big(f_\theta^{\mathrm{cause}}(\mathbf{S})(p)\big)_{y(p)}}_{\text{cause cross-entropy}} \;+\; \underbrace{\mathrm{BCE}\Big(f_\theta^{\mathrm{rel}}(\mathbf{S})(p),\; \mathbb{1}\big[y(p) = \texttt{RELIABLE}\big]\Big)}_{\text{reliability binary cross-entropy}} \Big],
+\label{eq:fusion-loss}
+\end{equation}
+with $\hat{c}(p)$ of Equation~\ref{eq:task} recovered at inference as $\operatorname*{arg\,max}_c \operatorname{softmax}(f_\theta^{\mathrm{cause}}(\mathbf{S})(p))_c$. This is the only trained component in the entire pipeline; the backbone, the kernel estimator, and the DINOv2 encoder are all frozen or independently pretrained and contribute no term to Equation~\ref{eq:fusion-loss}.
 
 \subsection{xSR-CausalBench}
 \label{sec:causalbench}
@@ -268,7 +310,12 @@ This scale is deliberately modest and is reported as such rather than disguised.
 
 \subsection{Fidelity}
 
-Table~\ref{tab:fidelity} reports PSNR, SSIM, and LPIPS~\citep{zhang2018lpips} between the super-resolved output and the true high-resolution image, averaged over the same held-out evaluation items used throughout Section~\ref{sec:experiments}, for CHASR's frozen diffusion backbone and, as a real fidelity comparison point, Real-ESRGAN~\citep{wang2021realesrgan} chained twice (4$\times$ then 4$\times$, mirroring the diffusion backbone's own two-hop structure in Section~\ref{sec:backbone}) using its official public \texttt{\seqsplit{RealESRGAN\_x4plus}} weights run on the identical inputs. Consistent with the framing throughout this paper, these are context metrics rather than the headline result: they are included because the special issue's own evaluation protocol expects them, and because LPIPS specifically addresses this paper's own stated concern that PSNR/SSIM under-penalize perceptually implausible content, not because a low pixel-fidelity score at 16$\times$ from a diffusion prior is evidence of anything gone wrong. A model that reconstructs the exact original pixels of information the degradation destroyed would not be doing generative super-resolution; it would be doing something closer to lossless compression, which is not what a 16$\times$ downsampling operator permits. The gap between these numbers and the higher PSNR/SSIM figures typically reported for diffusion super-resolution at 2$\times$ to 4$\times$ factors is exactly the phenomenon this paper is about, not a competing claim to be reconciled against it.
+Table~\ref{tab:fidelity} reports PSNR, SSIM, and LPIPS~\citep{zhang2018lpips} between the super-resolved output $\hat{x} \in [0,1]^{3\times H\times W}$ and the true high-resolution image $x$, averaged over the same held-out evaluation items used throughout Section~\ref{sec:experiments}, for CHASR's frozen diffusion backbone and, as a real fidelity comparison point, Real-ESRGAN~\citep{wang2021realesrgan} chained twice (4$\times$ then 4$\times$, mirroring the diffusion backbone's own two-hop structure in Section~\ref{sec:backbone}) using its official public \texttt{\seqsplit{RealESRGAN\_x4plus}} weights run on the identical inputs. PSNR is computed in the standard way from the mean squared error,
+\begin{equation}
+\mathrm{PSNR}(\hat{x}, x) = 10 \log_{10}\!\left(\frac{1}{\mathrm{MSE}(\hat{x},x)}\right), \qquad \mathrm{MSE}(\hat{x},x) = \frac{1}{3HW}\sum_{c,i,j}\big(\hat{x}_{c,i,j} - x_{c,i,j}\big)^2,
+\label{eq:psnr}
+\end{equation}
+with the numerator equal to $1$ rather than the more familiar $\mathrm{MAX}^2$ because both images are normalized to $[0,1]$ before comparison. SSIM is the standard windowed luminance--contrast--structure product~\citep{zhang2018lpips} and LPIPS is a learned perceptual distance in a pretrained network's feature space rather than a closed-form pixel statistic; both are computed with their respective standard public implementations rather than re-derived here. Consistent with the framing throughout this paper, these are context metrics rather than the headline result: they are included because the special issue's own evaluation protocol expects them, and because LPIPS specifically addresses this paper's own stated concern that PSNR/SSIM under-penalize perceptually implausible content, not because a low pixel-fidelity score at 16$\times$ from a diffusion prior is evidence of anything gone wrong. A model that reconstructs the exact original pixels of information the degradation destroyed would not be doing generative super-resolution; it would be doing something closer to lossless compression, which is not what a 16$\times$ downsampling operator permits. The gap between these numbers and the higher PSNR/SSIM figures typically reported for diffusion super-resolution at 2$\times$ to 4$\times$ factors is exactly the phenomenon this paper is about, not a competing claim to be reconciled against it.
 
 \begin{table}[h]
 \centering
@@ -289,7 +336,17 @@ The comparison is genuinely mixed rather than one-sided, and reported here exact
 
 \subsection{Attribution accuracy}
 
-Table~\ref{tab:attribution} reports the fusion head's five-way per-pixel cause classification accuracy and mean intersection-over-union against xSR-CausalBench's synthetic ground truth on the held-out set. xSR-CausalBench's class prior is far from uniform: two procedures (ill-posedness, mismatch) label an entire image with one class, while the other two (prior-reliance, distribution-shift) label only a small sub-region and leave the rest of that same image reliable, so reliable and the two whole-image classes dominate total pixel count and a uniform-random baseline (20\%) understates how hard the task is to beat trivially. Table~\ref{tab:attribution} therefore also reports the majority-class baseline, always predicting whichever class covers the most pixels in the held-out set (here, reliable, at 47.66\%). The trained fusion head reaches 48.36\% pixel accuracy, exceeding the majority-class baseline by 0.7 percentage points and the uniform-random baseline by more than 28. This is a materially weaker result than comparing only against the uniform-random baseline suggests, and it is reported here rather than left for a reader to reconstruct from the class distribution alone: at this training scale, most of the fusion head's apparent accuracy is attributable to the class prior, not to genuinely learned per-pixel cause discrimination, and Section~\ref{sec:discussion} treats this as the central open problem for scaling past this pilot, not a footnote to an otherwise strong number.
+Table~\ref{tab:attribution} reports the fusion head's five-way per-pixel cause classification accuracy and mean intersection-over-union against xSR-CausalBench's synthetic ground truth on the held-out set. Writing $\hat{c}(p)$ for the predicted class of Equation~\ref{eq:task} and $y(p)$ for xSR-CausalBench's ground-truth label at pixel $p$, both over an evaluation image's pixel set $P$, pixel accuracy is the fraction of pixels the predicted cause map recovers exactly,
+\begin{equation}
+\mathrm{Acc} = \frac{1}{|P|}\sum_{p \in P} \mathbb{1}\big[\hat{c}(p) = y(p)\big],
+\label{eq:pixel-acc}
+\end{equation}
+and mean intersection-over-union averages, over the five-class taxonomy $\mathcal{C}$ of Equation~\ref{eq:task}, the overlap between the predicted region $\hat{P}_c = \{p : \hat{c}(p)=c\}$ and the true region $P_c = \{p : y(p) = c\}$ for each class,
+\begin{equation}
+\mathrm{mIoU} = \frac{1}{|\mathcal{C}|}\sum_{c \in \mathcal{C}} \frac{|\hat{P}_c \cap P_c|}{|\hat{P}_c \cup P_c|},
+\label{eq:miou}
+\end{equation}
+with the convention that $0/0 := 1$ for a class absent from both the prediction and the ground truth on a given image. Table~\ref{tab:attribution} reports the per-image macro-average of Equation~\ref{eq:miou} unless stated otherwise; Table~\ref{tab:ablation} reports the same quantity for every baseline compared there. xSR-CausalBench's class prior is far from uniform: two procedures (ill-posedness, mismatch) label an entire image with one class, while the other two (prior-reliance, distribution-shift) label only a small sub-region and leave the rest of that same image reliable, so reliable and the two whole-image classes dominate total pixel count and a uniform-random baseline (20\%) understates how hard the task is to beat trivially. Table~\ref{tab:attribution} therefore also reports the majority-class baseline, always predicting whichever class covers the most pixels in the held-out set (here, reliable, at 47.66\%). The trained fusion head reaches 48.36\% pixel accuracy, exceeding the majority-class baseline by 0.7 percentage points and the uniform-random baseline by more than 28. This is a materially weaker result than comparing only against the uniform-random baseline suggests, and it is reported here rather than left for a reader to reconstruct from the class distribution alone: at this training scale, most of the fusion head's apparent accuracy is attributable to the class prior, not to genuinely learned per-pixel cause discrimination, and Section~\ref{sec:discussion} treats this as the central open problem for scaling past this pilot, not a footnote to an otherwise strong number.
 
 \begin{table}[h]
 \centering
@@ -341,7 +398,12 @@ This narrow margin over the majority-class baseline has a direct, identifiable c
 
 \subsection{Disentanglement}
 
-Table~\ref{tab:disentanglement} reports the Pearson correlation matrix among the four raw signal maps, flattened and pooled across all pixels of all 20 held-out images, to report the correlation directly rather than assume clean separation among the four causes.
+Table~\ref{tab:disentanglement} reports the Pearson correlation matrix among the four raw signal maps, flattened and pooled across all pixels of all 20 held-out images, to report the correlation directly rather than assume clean separation among the four causes. For two signal maps $S_i, S_j$ flattened over the pooled pixel set $P$, with sample means $\bar{S}_i, \bar{S}_j$,
+\begin{equation}
+\rho(S_i, S_j) = \frac{\sum_{p \in P} \big(S_i(p) - \bar{S}_i\big)\big(S_j(p) - \bar{S}_j\big)}{\sqrt{\sum_{p \in P} \big(S_i(p) - \bar{S}_i\big)^2} \; \sqrt{\sum_{p \in P} \big(S_j(p) - \bar{S}_j\big)^2}},
+\label{eq:pearson}
+\end{equation}
+with $\rho \in [-1, 1]$ and $\rho(S_i,S_i) = 1$ on the diagonal by construction, which Table~\ref{tab:disentanglement} reports for every pair $(i,j) \in \{1,2,3,4\}^2$.
 
 \begin{table}[h]
 \centering
@@ -365,7 +427,12 @@ Three of the six off-diagonal correlations are weak, at or below $|r|=0.15$, ind
 \subsection{Ablation}
 \label{sec:ablation}
 
-Table~\ref{tab:ablation} reports the ablation the evaluation protocol specifies: the trained fusion head against each raw signal used alone and against an equal-weight combination rule. Concretely, each single-signal baseline predicts that signal's own cause wherever it exceeds a threshold and reliable otherwise; the equal-weight rule is the same idea applied jointly, predicting whichever of S1--S4 is largest at a pixel if that maximum exceeds a shared threshold, reliable otherwise, since it has no learned weights to combine the four signals any other way. All five thresholds were grid-searched over 51 evenly spaced points from 0 to 1 on the fusion head's own training set, then applied frozen to the held-out set, so the comparison is never fit and evaluated on the same data. This calibration objective (raw accuracy under severe class imbalance) is itself a factor in what follows: a threshold that fires only on a rare cause typically costs more false positives against the dominant reliable class than it gains in true positives, so an accuracy-maximizing grid search is biased toward never firing regardless of how informative the underlying signal actually is, and the results below should be read with that bias in mind rather than as a clean measurement of signal informativeness alone. The fusion head's own accuracy here (48.36\%) reproduces Table~\ref{tab:attribution}'s number exactly; its mIoU (29.81\%) differs slightly from Table~\ref{tab:attribution}'s 29.53\% despite both coming from the same checkpoints and the same held-out set, a small discrepancy attributed to ordinary run-to-run floating-point non-determinism in fp16 diffusion sampling across two separate script executions rather than to any difference in method, and reported here rather than silently rounded away.
+Table~\ref{tab:ablation} reports the ablation the evaluation protocol specifies: the trained fusion head against each raw signal used alone and against an equal-weight combination rule. Concretely, each single-signal baseline predicts that signal's own cause wherever it exceeds a threshold and reliable otherwise; the equal-weight rule is the same idea applied jointly, predicting whichever of S1--S4 is largest at a pixel if that maximum exceeds a shared threshold, reliable otherwise, since it has no learned weights to combine the four signals any other way. Formally, writing $S_{\max}(p) = \max_{i \in \{1,\dots,4\}} S_i(p)$ for a candidate threshold rule and $\mathcal{D}_{\mathrm{calib}}$ for the fusion head's own training set, every threshold $\tau_i$ reported in Table~\ref{tab:ablation} solves
+\begin{equation}
+\tau_i^\ast = \operatorname*{arg\,max}_{\tau \in \{0, 0.02, \dots, 1.0\}} \; \frac{1}{|\mathcal{D}_{\mathrm{calib}}|}\sum_{p \in \mathcal{D}_{\mathrm{calib}}} \mathbb{1}\Big[\hat{c}_\tau(p) = y(p)\Big], \qquad \hat{c}_\tau(p) = \begin{cases} \operatorname*{arg\,max}_i S_i(p) & \text{if } S_{\max}(p) > \tau \\ \texttt{RELIABLE} & \text{otherwise,} \end{cases}
+\label{eq:threshold-calib}
+\end{equation}
+over the 51-point grid $\{0, 0.02, \dots, 1.0\}$, with the single-signal baselines a special case of Equation~\ref{eq:threshold-calib} restricted to one fixed $i$ rather than the joint argmax. Every $\tau_i^\ast$ is fit on $\mathcal{D}_{\mathrm{calib}}$ alone and then applied frozen to the held-out set for evaluation, so the comparison is never fit and evaluated on the same data. This calibration objective (raw accuracy under severe class imbalance) is itself a factor in what follows: a threshold that fires only on a rare cause typically costs more false positives against the dominant reliable class than it gains in true positives, so an accuracy-maximizing grid search is biased toward never firing regardless of how informative the underlying signal actually is, and the results below should be read with that bias in mind rather than as a clean measurement of signal informativeness alone. The fusion head's own accuracy here (48.36\%) reproduces Table~\ref{tab:attribution}'s number exactly; its mIoU (29.81\%) differs slightly from Table~\ref{tab:attribution}'s 29.53\% despite both coming from the same checkpoints and the same held-out set, a small discrepancy attributed to ordinary run-to-run floating-point non-determinism in fp16 diffusion sampling across two separate script executions rather than to any difference in method, and reported here rather than silently rounded away.
 
 \begin{table}[h]
 \centering
