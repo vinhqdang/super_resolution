@@ -1,23 +1,33 @@
 """Ablation study (spec Section 5, item 3; named in manuscript/main.tex
 Section 5.4 as the single most important missing evaluation piece): does
 the trained fusion head add value over (a) each raw causal signal used
-alone and (b) an untrained equal-weight combination of all four signals?
+alone, (b) an untrained equal-weight combination of all four signals, (c)
+the benchmark's own majority-class rule, and (d) a jointly-fit but
+architecturally minimal per-pixel logistic regression on the same signals
+(src.eval.logistic_control) — the specific control the manuscript's
+Discussion section names as an untested "unexplored middle ground between
+a single grid-searched threshold and the full convolutional fusion head."
+This script also reports a paired bootstrap confidence interval
+(src.eval.bootstrap) over each method's per-item accuracy against the
+majority-class baseline, closing the manuscript's other named gap: "no
+per-image variance or significance test reported."
 
 Requires the exact same artifacts as scripts/run_evaluation.py, PLUS the
 signal-stack cache scripts/train_fusion_head.py wrote at
 checkpoints/causalbench_signal_cache.pt (used here as the calibration set
-for the two baseline families' thresholds — reusing it costs zero extra
-diffusion sampling, since it was already computed once during fusion-head
-training). If that cache is missing, this script raises with a clear
-message rather than silently recomputing it (which would cost the same
-~2-3 hours logged for the original precompute pass).
+for the two threshold baseline families AND as the logistic control's own
+training set — reusing it costs zero extra diffusion sampling, since it
+was already computed once during fusion-head training). If that cache is
+missing, this script raises with a clear message rather than silently
+recomputing it (which would cost the same ~2-3 hours logged for the
+original precompute pass).
 
-Threshold calibration and held-out evaluation are on disjoint data: the
-cache is the fusion head's own training set (DIV2K valid [:40] + ood
-[40:50]); the held-out set here is the same range scripts/run_evaluation.py
-uses (DIV2K valid [50:70] + ood [70:75]), matching that script exactly so
-the "ours" row in this comparison table reproduces run_evaluation.py's own
-attribution-accuracy number.
+Threshold calibration, logistic-control training, and held-out evaluation
+are on disjoint data: the cache is the fusion head's own training set
+(DIV2K valid [:40] + ood [40:50]); the held-out set here is the same range
+scripts/run_evaluation.py uses (DIV2K valid [50:70] + ood [70:75]),
+matching that script exactly so the "ours" row in this comparison table
+reproduces run_evaluation.py's own attribution-accuracy number.
 
 Run: conda run -n py313 python scripts/run_ablation.py
 """
@@ -30,6 +40,7 @@ from PIL import Image
 from transformers import AutoModel
 
 from src.backbone.diffusion_backbone import DEFAULT_MODEL_ID, DiffusionSRBackbone
+from src.causalbench.build_benchmark import CAUSE_LABELS
 from src.causalbench.dataset import CausalBenchDataset
 from src.eval.ablation import (
     calibrate_equal_weight_threshold,
@@ -38,6 +49,8 @@ from src.eval.ablation import (
     predict_single_signal,
 )
 from src.eval.attribution_metrics import mean_iou, pixel_accuracy
+from src.eval.bootstrap import paired_bootstrap_ci
+from src.eval.logistic_control import predict_logistic_control, train_logistic_control
 from src.fusion.infer import run_chasr
 from src.fusion.model import FusionHead
 from src.fusion.train import SIGNAL_STACK_K
@@ -49,6 +62,14 @@ EVAL_MAX_IMAGES = 20
 MODEL_ID = os.environ.get("CHASR_MODEL_ID", DEFAULT_MODEL_ID)
 CACHE_PATH = "checkpoints/causalbench_signal_cache.pt"
 SIGNAL_NAMES = ["S1 (ill-posedness)", "S2 (prior-reliance)", "S3 (mismatch)", "S4 (distribution-shift)"]
+_RELIABLE = CAUSE_LABELS["RELIABLE"]
+
+
+def predict_majority_class(label_map: torch.Tensor) -> torch.Tensor:
+    """Always predicts RELIABLE — the benchmark's own majority class by
+    construction (Section 3.5). Computed per item so its per-item accuracy
+    is directly comparable to every other method's for the bootstrap CI."""
+    return torch.full_like(label_map, _RELIABLE)
 
 
 def main():
@@ -69,6 +90,11 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    print("Training the logistic-regression control on the same calibration set (same cache, batch size, optimizer, and epoch count as the fusion head)...")
+    torch.manual_seed(0)
+    logistic_control = train_logistic_control(calibration_items, epochs=30, batch_size=4, device=device)
+    logistic_control.eval()
+
     hr_paths = sorted(glob.glob("data/DIV2K_valid_HR/*.png"))[50 : 50 + EVAL_MAX_IMAGES]
     hr_images = [np.asarray(Image.open(p).convert("RGB").resize((HR_PATCH_SIZE, HR_PATCH_SIZE))).astype(np.float32) / 255.0 for p in hr_paths]
     ood_paths = sorted(glob.glob("data/DIV2K_valid_HR/*.png"))[50 + EVAL_MAX_IMAGES : 50 + EVAL_MAX_IMAGES + 5]
@@ -87,7 +113,9 @@ def main():
 
     results = {
         "Fusion head (ours)": {"accuracy": [], "iou": []},
+        "Logistic regression control": {"accuracy": [], "iou": []},
         "Equal-weight combination": {"accuracy": [], "iou": []},
+        "Majority-class baseline": {"accuracy": [], "iou": []},
     }
     for name in SIGNAL_NAMES:
         results[f"{name} alone"] = {"accuracy": [], "iou": []}
@@ -99,13 +127,22 @@ def main():
 
         cause_map_cpu = result["cause_map"].cpu()
         signal_stack_cpu = result["signal_stack"].cpu().float()
+        full_signal_stack_cpu = result["full_signal_stack"].cpu().float()
 
         results["Fusion head (ours)"]["accuracy"].append(pixel_accuracy(cause_map_cpu, gt_label_map))
         results["Fusion head (ours)"]["iou"].append(mean_iou(cause_map_cpu, gt_label_map))
 
+        logistic_pred = predict_logistic_control(logistic_control, full_signal_stack_cpu).cpu()
+        results["Logistic regression control"]["accuracy"].append(pixel_accuracy(logistic_pred, gt_label_map))
+        results["Logistic regression control"]["iou"].append(mean_iou(logistic_pred, gt_label_map))
+
         equal_weight_pred = predict_equal_weight(signal_stack_cpu, equal_weight_threshold)
         results["Equal-weight combination"]["accuracy"].append(pixel_accuracy(equal_weight_pred, gt_label_map))
         results["Equal-weight combination"]["iou"].append(mean_iou(equal_weight_pred, gt_label_map))
+
+        majority_pred = predict_majority_class(gt_label_map)
+        results["Majority-class baseline"]["accuracy"].append(pixel_accuracy(majority_pred, gt_label_map))
+        results["Majority-class baseline"]["iou"].append(mean_iou(majority_pred, gt_label_map))
 
         for idx, name in enumerate(SIGNAL_NAMES):
             single_pred = predict_single_signal(signal_stack_cpu[idx], single_signal_thresholds[idx], signal_idx=idx)
@@ -118,6 +155,16 @@ def main():
         acc = np.mean(metrics["accuracy"])
         iou = np.mean(metrics["iou"])
         print(f"{name:<28} {acc:>14.4f} {iou:>10.4f}")
+
+    print("\n=== Paired bootstrap 95% CIs on per-item pixel accuracy (10,000 resamples over held-out items) ===")
+    baseline_acc = results["Majority-class baseline"]["accuracy"]
+    for name in ["Fusion head (ours)", "Logistic regression control"]:
+        ci = paired_bootstrap_ci(results[name]["accuracy"], baseline_acc, n_resamples=10000, ci=0.95, seed=0)
+        verdict = "excludes zero" if ci["excludes_zero"] else "does NOT exclude zero"
+        print(f"  {name} vs. majority-class baseline: diff = {ci['observed_diff']:+.4f}, 95% CI = [{ci['ci_lower']:+.4f}, {ci['ci_upper']:+.4f}] ({verdict})")
+    ci_fusion_vs_logistic = paired_bootstrap_ci(results["Fusion head (ours)"]["accuracy"], results["Logistic regression control"]["accuracy"], n_resamples=10000, ci=0.95, seed=0)
+    verdict = "excludes zero" if ci_fusion_vs_logistic["excludes_zero"] else "does NOT exclude zero"
+    print(f"  Fusion head (ours) vs. logistic regression control: diff = {ci_fusion_vs_logistic['observed_diff']:+.4f}, 95% CI = [{ci_fusion_vs_logistic['ci_lower']:+.4f}, {ci_fusion_vs_logistic['ci_upper']:+.4f}] ({verdict})")
 
 
 if __name__ == "__main__":

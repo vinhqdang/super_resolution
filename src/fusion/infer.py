@@ -46,4 +46,5 @@ def run_chasr(lr_patch, backbone, kernel_estimator, feature_bank, dino_encoder, 
         "cause_map": cause_map,
         "reliability_map": reliability_map,
         "signal_stack": signal_stack.squeeze(0)[:4],  # (4, H, W): S1-S4 only, luminance (index 4) dropped — for disentanglement analysis (Task 13)
+        "full_signal_stack": signal_stack.squeeze(0),  # (5, H, W): S1-S4 + luminance, the fusion head's actual input — for any control model trained on the same 5-channel cache (e.g. src.eval.logistic_control)
     }

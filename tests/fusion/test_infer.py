@@ -48,6 +48,7 @@ def test_run_chasr_returns_expected_keys_and_shapes():
     assert result["reliability_map"].shape == (1024, 1024)
     assert result["cause_map"].dtype == torch.int64
     assert result["signal_stack"].shape == (4, 1024, 1024)
+    assert result["full_signal_stack"].shape == (5, 1024, 1024)
 
     # Content-identity check, not just shape: S3/S4 are spatially-constant
     # (torch.full_like) for these stubs while S1/S2/luminance are not, so
@@ -57,3 +58,9 @@ def test_run_chasr_returns_expected_keys_and_shapes():
     s3_channel, s4_channel = result["signal_stack"][2], result["signal_stack"][3]
     assert torch.allclose(s3_channel, torch.zeros_like(s3_channel))  # in-distribution stub kernel -> 0 mismatch
     assert torch.allclose(s4_channel, torch.full_like(s4_channel, 0.5))  # stub normalized_distance -> 0.5
+
+    # full_signal_stack must be signal_stack's S1-S4 channels plus one more
+    # (luminance) appended, not an independently-recomputed stack that could
+    # silently drift from what the fusion head (and any control model
+    # trained on the same 5-channel cache) actually consumes.
+    assert torch.equal(result["full_signal_stack"][:4], result["signal_stack"])
