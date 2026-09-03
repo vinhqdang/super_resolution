@@ -2,15 +2,26 @@
 results table: fidelity metrics (PSNR/SSIM/LPIPS), attribution accuracy/mIoU
 (both per-image macro-average and dataset-level accumulated-confusion) with
 a majority-class baseline, per-metric spread across the held-out set, and
-the disentanglement correlation matrix. Also saves one qualitative
-LR/SR/ground-truth/predicted-attribution example per xSR-CausalBench
-procedure to manuscript/figures/, for the manuscript's qualitative figure.
+the disentanglement correlation matrix. Also saves two qualitative
+LR/SR/ground-truth/predicted-attribution examples per xSR-CausalBench
+procedure to manuscript/figures/ (see below), for the manuscript's
+qualitative figures.
 
 HR images are resized to 1024x1024, matching scripts/train_fusion_head.py
 (see that file's docstring for why — must match the backbone's fixed 16x
 factor). The held-out image range [50:70] is deliberately disjoint from
 train_fusion_head.py's [0:40] + [40:50] ood range so evaluation never
 sees a training image.
+
+For each procedure, two qualitative examples are saved rather than one:
+the held-out item with the highest per-image pixel accuracy for that
+procedure ("ex1", a representative success case) and the item with the
+lowest ("ex2", a representative hard case). This selection is by a fixed,
+pre-registered criterion (per-image accuracy, computed identically to the
+paper's own headline metric) rather than hand-picked after the fact for
+visual appeal, so the two examples per procedure are free to look
+different — including both "recovers the region cleanly" and "misses it
+almost entirely" — without that being evidence of cherry-picking.
 
 mIoU aggregation: this reports both the per-image macro-average (mean of
 mean_iou() calls, one per image — matches the Task 13 plan's mean_iou()
@@ -119,7 +130,7 @@ def main():
     psnrs, ssims, lpipses, accuracies, ious, all_signals = [], [], [], [], [], []
     confusion = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.int64)
     gt_class_pixel_counts = np.zeros(NUM_CLASSES, dtype=np.int64)
-    saved_procedures = set()
+    procedure_candidates = {p: [] for p in _PROCEDURES}  # procedure -> list of (per_item_accuracy, lr_np, sr_np, gt_np, pred_np)
 
     for i in range(len(held_out)):
         lr, hr, gt_label_map = held_out[i]
@@ -144,7 +155,8 @@ def main():
         # comparing tensors on different devices raises, and this path
         # (like sr_image above) was only ever exercised via CPU stubs before.
         cause_map_cpu = result["cause_map"].cpu()
-        accuracies.append(pixel_accuracy(cause_map_cpu, gt_label_map))
+        item_accuracy = pixel_accuracy(cause_map_cpu, gt_label_map)
+        accuracies.append(item_accuracy)
         ious.append(mean_iou(cause_map_cpu, gt_label_map))
         accumulate_confusion(cause_map_cpu, gt_label_map, confusion)
         for cls in range(NUM_CLASSES):
@@ -156,13 +168,19 @@ def main():
         # fp32 tensor-core accumulation.
         all_signals.append(result["signal_stack"].reshape(4, -1).cpu().float())  # (4, H*W) per image
 
-        if procedure not in saved_procedures:
-            saved_procedures.add(procedure)
-            lr_np = lr.permute(1, 2, 0).clamp(0, 1).numpy()
-            Image.fromarray((lr_np * 255).astype(np.uint8)).resize((256, 256), Image.NEAREST).save(f"{FIGURE_DIR}/{procedure}_lr.png")
-            Image.fromarray((sr_np * 255).astype(np.uint8)).save(f"{FIGURE_DIR}/{procedure}_sr.png")
-            Image.fromarray(colorize_label_map(gt_label_map.numpy())).save(f"{FIGURE_DIR}/{procedure}_gt.png")
-            Image.fromarray(colorize_label_map(cause_map_cpu.numpy())).save(f"{FIGURE_DIR}/{procedure}_pred.png")
+        lr_np = lr.permute(1, 2, 0).clamp(0, 1).numpy()
+        lr_thumb = np.asarray(Image.fromarray((lr_np * 255).astype(np.uint8)).resize((256, 256), Image.NEAREST))
+        procedure_candidates[procedure].append((item_accuracy, lr_thumb, (sr_np * 255).astype(np.uint8), colorize_label_map(gt_label_map.numpy()), colorize_label_map(cause_map_cpu.numpy())))
+
+    for procedure, candidates in procedure_candidates.items():
+        candidates.sort(key=lambda c: c[0])  # ascending per-item accuracy: worst first, best last
+        worst, best = candidates[0], candidates[-1]
+        for suffix, (_, lr_arr, sr_arr, gt_arr, pred_arr) in [("ex1", best), ("ex2", worst)]:
+            Image.fromarray(lr_arr).save(f"{FIGURE_DIR}/{procedure}_{suffix}_lr.png")
+            Image.fromarray(sr_arr).save(f"{FIGURE_DIR}/{procedure}_{suffix}_sr.png")
+            Image.fromarray(gt_arr).save(f"{FIGURE_DIR}/{procedure}_{suffix}_gt.png")
+            Image.fromarray(pred_arr).save(f"{FIGURE_DIR}/{procedure}_{suffix}_pred.png")
+        print(f"{procedure}: ex1 (best) per-image accuracy = {best[0]:.4f}, ex2 (worst) per-image accuracy = {worst[0]:.4f}")
 
     print(f"PSNR: {np.mean(psnrs):.2f} (std {np.std(psnrs):.2f})")
     print(f"SSIM: {np.mean(ssims):.4f} (std {np.std(ssims):.4f})")

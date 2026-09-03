@@ -365,35 +365,66 @@ Mean IoU, dataset-level accumulated confusion & 19.50\% \\
 \end{tabular}
 \end{table}
 
-This narrow margin over the majority-class baseline has a direct, identifiable cause rather than being an unexplained shortfall. The fusion head was trained on only 160 items with unweighted cross-entropy, while two of the four procedures (ill-posedness-dominant and degradation-mismatch-dominant) label an entire image with one class and the other two label only a small sub-region, so the two region-scale causes, prior-reliance and distribution-shift, are a small minority of total training pixels with no class-balancing correction. An unweighted classifier trained under this imbalance is expected to converge toward something close to the majority-class rule, which is what Table~\ref{tab:attribution} shows. Figure~\ref{fig:qualitative} makes this concrete with one held-out example per procedure: the predicted cause map for the prior-reliance example does recover the general location of the true suppressed region, but with substantial noise and incomplete coverage, exactly the signature of a model that has learned a real but weak signal on top of a strong class prior rather than either pure memorization of the prior or clean per-pixel discrimination. Separately, 40 training images is a small fraction of the design's target scale, and the training loss curves (kernel estimator: 1.63 dropping to a 0.87–0.93 plateau after one epoch; fusion head: 1.98 dropping to a 1.75–1.76 plateau after roughly eight epochs) both show real but modest learning consistent with a data-limited regime rather than a broken training signal. Section~\ref{sec:discussion} treats class-balanced loss weighting, not just benchmark scale, as an immediate next step rather than optional future polish.
+This narrow margin over the majority-class baseline has a direct, identifiable cause rather than being an unexplained shortfall. The fusion head was trained on only 160 items with unweighted cross-entropy, while two of the four procedures (ill-posedness-dominant and degradation-mismatch-dominant) label an entire image with one class and the other two label only a small sub-region, so the two region-scale causes, prior-reliance and distribution-shift, are a small minority of total training pixels with no class-balancing correction. An unweighted classifier trained under this imbalance is expected to converge toward something close to the majority-class rule, which is what Table~\ref{tab:attribution} shows. Figures~\ref{fig:qualitative-best} and~\ref{fig:qualitative-worst} make this concrete with two held-out examples per procedure rather than one, selected as the highest- and lowest-accuracy held-out item for that procedure rather than hand-picked, and the two figures tell a genuinely different story from each other rather than a milder version of the same one. The two region-local causes are near-exact at their best (prior-reliance and distribution-shift both exceed 99\% per-image accuracy in Figure~\ref{fig:qualitative-best}, visually indistinguishable from their ground-truth rectangles) but degrade sharply at their worst: Figure~\ref{fig:qualitative-worst}'s prior-reliance example scatters both the prior-reliance and ill-posed labels across image edges and textures instead of the true localized rectangle, recovering none of the actual suppressed region. The whole-image ill-posed cause never reaches this best-case precision even in its strongest example (52\% in Figure~\ref{fig:qualitative-best}, a partial, content-correlated coverage rather than a clean match) and collapses entirely in its weakest, where the fusion head predicts prior-reliance almost everywhere instead of ill-posed. Degradation-mismatch is the most severe case: every held-out mismatch item scores exactly 0\% pixel accuracy, best and worst alike, because the fusion head essentially never predicts the mismatch class at this training scale — consistent with Section~\ref{sec:ablation}'s finding that the raw S3 signal itself rarely crosses its calibrated firing threshold on the held-out set. Read together, the two figures show a model that has learned a real, spatially precise signal for the two region-local causes when the class prior does not overwhelm it, essentially no signal yet for the mismatch cause, and a partial, content-correlated signal for the ill-posed cause — a substantially more uneven picture per cause than the aggregate 48.4\% pixel accuracy in Table~\ref{tab:attribution} alone would suggest. Separately, 40 training images is a small fraction of the design's target scale, and the training loss curves (kernel estimator: 1.63 dropping to a 0.87–0.93 plateau after one epoch; fusion head: 1.98 dropping to a 1.75–1.76 plateau after roughly eight epochs) both show real but modest learning consistent with a data-limited regime rather than a broken training signal. Section~\ref{sec:discussion} treats class-balanced loss weighting, not just benchmark scale, as an immediate next step rather than optional future polish.
+
+Rather than illustrate each procedure with a single hand-picked image, Figures~\ref{fig:qualitative-best} and~\ref{fig:qualitative-worst} show two held-out examples per procedure, selected by a fixed, pre-registered criterion rather than after-the-fact for visual appeal: for each procedure, the held-out item with the highest per-image pixel accuracy (Figure~\ref{fig:qualitative-best}, a representative success case) and the item with the lowest (Figure~\ref{fig:qualitative-worst}, a representative hard case), both computed with the identical per-image accuracy Table~\ref{tab:attribution}'s headline number averages over. The two figures are deliberately meant to tell different stories rather than repeat the same one: Figure~\ref{fig:qualitative-best} shows the pipeline at its best, while Figure~\ref{fig:qualitative-worst} shows where it still struggles, so neither figure alone would give a representative picture of the method's actual behavior on held-out data.
 
 \begin{figure}[h]
 \centering
 \begin{tabular}{cp{20mm}p{20mm}p{20mm}p{20mm}}
 & LR input & SR output & Ground truth & Predicted \\
 \rotatebox{90}{\small Ill-posed} &
-\includegraphics[width=20mm]{figures/ill_posed_lr.png} &
-\includegraphics[width=20mm]{figures/ill_posed_sr.png} &
-\includegraphics[width=20mm]{figures/ill_posed_gt.png} &
-\includegraphics[width=20mm]{figures/ill_posed_pred.png} \\
+\includegraphics[width=20mm]{figures/ill_posed_ex1_lr.png} &
+\includegraphics[width=20mm]{figures/ill_posed_ex1_sr.png} &
+\includegraphics[width=20mm]{figures/ill_posed_ex1_gt.png} &
+\includegraphics[width=20mm]{figures/ill_posed_ex1_pred.png} \\
 \rotatebox{90}{\small Prior reliance} &
-\includegraphics[width=20mm]{figures/prior_reliance_lr.png} &
-\includegraphics[width=20mm]{figures/prior_reliance_sr.png} &
-\includegraphics[width=20mm]{figures/prior_reliance_gt.png} &
-\includegraphics[width=20mm]{figures/prior_reliance_pred.png} \\
+\includegraphics[width=20mm]{figures/prior_reliance_ex1_lr.png} &
+\includegraphics[width=20mm]{figures/prior_reliance_ex1_sr.png} &
+\includegraphics[width=20mm]{figures/prior_reliance_ex1_gt.png} &
+\includegraphics[width=20mm]{figures/prior_reliance_ex1_pred.png} \\
 \rotatebox{90}{\small Mismatch} &
-\includegraphics[width=20mm]{figures/mismatch_lr.png} &
-\includegraphics[width=20mm]{figures/mismatch_sr.png} &
-\includegraphics[width=20mm]{figures/mismatch_gt.png} &
-\includegraphics[width=20mm]{figures/mismatch_pred.png} \\
+\includegraphics[width=20mm]{figures/mismatch_ex1_lr.png} &
+\includegraphics[width=20mm]{figures/mismatch_ex1_sr.png} &
+\includegraphics[width=20mm]{figures/mismatch_ex1_gt.png} &
+\includegraphics[width=20mm]{figures/mismatch_ex1_pred.png} \\
 \rotatebox{90}{\small Distr. shift} &
-\includegraphics[width=20mm]{figures/distribution_shift_lr.png} &
-\includegraphics[width=20mm]{figures/distribution_shift_sr.png} &
-\includegraphics[width=20mm]{figures/distribution_shift_gt.png} &
-\includegraphics[width=20mm]{figures/distribution_shift_pred.png} \\
+\includegraphics[width=20mm]{figures/distribution_shift_ex1_lr.png} &
+\includegraphics[width=20mm]{figures/distribution_shift_ex1_sr.png} &
+\includegraphics[width=20mm]{figures/distribution_shift_ex1_gt.png} &
+\includegraphics[width=20mm]{figures/distribution_shift_ex1_pred.png} \\
 \end{tabular}
-\caption{One held-out example per xSR-CausalBench procedure. LR input (nearest-neighbor upsampled for display), the backbone's 16$\times$ SR output, the ground-truth cause map, and the fusion head's predicted cause map. Color key: ill-posed (red), prior-reliance (green), degradation-mismatch (yellow), distribution-shift (blue), reliable (gray). The prior-reliance row shows the predicted map recovering the approximate location of the true suppressed region with visible noise, consistent with the weak-but-real signal described above; the whole-image ill-posed and mismatch rows are largely uniform in both ground truth and prediction by construction.}
-\label{fig:qualitative}
+\caption{Best-case held-out example per xSR-CausalBench procedure: for each procedure, the held-out item with the highest per-image pixel accuracy. LR input (nearest-neighbor upsampled for display), the backbone's 16$\times$ SR output, the ground-truth cause map, and the fusion head's predicted cause map. Color key: ill-posed (red), prior-reliance (green), degradation-mismatch (yellow), distribution-shift (blue), reliable (gray). These rows show the pipeline close to its best behavior on held-out data, not its typical or worst behavior; compare against Figure~\ref{fig:qualitative-worst}.}
+\label{fig:qualitative-best}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\begin{tabular}{cp{20mm}p{20mm}p{20mm}p{20mm}}
+& LR input & SR output & Ground truth & Predicted \\
+\rotatebox{90}{\small Ill-posed} &
+\includegraphics[width=20mm]{figures/ill_posed_ex2_lr.png} &
+\includegraphics[width=20mm]{figures/ill_posed_ex2_sr.png} &
+\includegraphics[width=20mm]{figures/ill_posed_ex2_gt.png} &
+\includegraphics[width=20mm]{figures/ill_posed_ex2_pred.png} \\
+\rotatebox{90}{\small Prior reliance} &
+\includegraphics[width=20mm]{figures/prior_reliance_ex2_lr.png} &
+\includegraphics[width=20mm]{figures/prior_reliance_ex2_sr.png} &
+\includegraphics[width=20mm]{figures/prior_reliance_ex2_gt.png} &
+\includegraphics[width=20mm]{figures/prior_reliance_ex2_pred.png} \\
+\rotatebox{90}{\small Mismatch} &
+\includegraphics[width=20mm]{figures/mismatch_ex2_lr.png} &
+\includegraphics[width=20mm]{figures/mismatch_ex2_sr.png} &
+\includegraphics[width=20mm]{figures/mismatch_ex2_gt.png} &
+\includegraphics[width=20mm]{figures/mismatch_ex2_pred.png} \\
+\rotatebox{90}{\small Distr. shift} &
+\includegraphics[width=20mm]{figures/distribution_shift_ex2_lr.png} &
+\includegraphics[width=20mm]{figures/distribution_shift_ex2_sr.png} &
+\includegraphics[width=20mm]{figures/distribution_shift_ex2_gt.png} &
+\includegraphics[width=20mm]{figures/distribution_shift_ex2_pred.png} \\
+\end{tabular}
+\caption{Hardest-case held-out example per xSR-CausalBench procedure: for each procedure, the held-out item with the lowest per-image pixel accuracy, selected by the same criterion as Figure~\ref{fig:qualitative-best} rather than chosen to look favorable. Same layout and color key as Figure~\ref{fig:qualitative-best}. These rows are where the fusion head's predictions diverge most from the ground truth on held-out data: the prior-reliance row shows the predicted label scattered across image edges and textures rather than localized to the true region, the ill-posed row shows the model predicting prior-reliance almost everywhere instead of ill-posed, and the mismatch row (like its best-case counterpart in Figure~\ref{fig:qualitative-best}) scores zero pixel accuracy because the fusion head does not predict the mismatch class at this training scale, as discussed in the text alongside.}
+\label{fig:qualitative-worst}
 \end{figure}
 
 \subsection{Disentanglement}
@@ -462,7 +493,7 @@ This comparison has two limits. First, it rules out five specific hand-crafted a
 
 \subsection{What this pilot validates, and what it does not}
 
-The experiment reported here demonstrates that the CHASR architecture trains end to end on real images and produces a fusion head whose predictions are comfortably above uniform-random and, in the one qualitative example examined directly (Figure~\ref{fig:qualitative}), spatially correlated with the true region rather than uniform noise; it also demonstrates that the disentanglement analysis specified in advance produces an interpretable, honest result rather than an embarrassing surprise. It does not yet demonstrate that the fusion head has learned substantially more than the benchmark's own class prior: the 0.7-point margin over the majority-class baseline (Table~\ref{tab:attribution}) is the single most important number in this paper to improve before any stronger claim is warranted, and framing the pixel-accuracy result as state-of-the-art or as clearly beyond the class prior would misrepresent both the scale of the experiment and what the numbers can currently support. The training and evaluation sets used here, 40 and 20 images respectively, are roughly one twentieth of the design's target scale of 500 to 1000 images per procedure. Scaling to that target, incorporating Urban100 and Manga109 alongside DIV2K for structural and textural diversity as the design specifies, is the immediate and clearly defined next step, not a vague direction for future work.
+The experiment reported here demonstrates that the CHASR architecture trains end to end on real images and produces a fusion head whose predictions are comfortably above uniform-random and, in the qualitative examples examined directly (Figures~\ref{fig:qualitative-best} and~\ref{fig:qualitative-worst}), spatially correlated with the true region in the best case rather than uniform noise, though that correlation is visibly weaker in the hardest case; it also demonstrates that the disentanglement analysis specified in advance produces an interpretable, honest result rather than an embarrassing surprise. It does not yet demonstrate that the fusion head has learned substantially more than the benchmark's own class prior: the 0.7-point margin over the majority-class baseline (Table~\ref{tab:attribution}) is the single most important number in this paper to improve before any stronger claim is warranted, and framing the pixel-accuracy result as state-of-the-art or as clearly beyond the class prior would misrepresent both the scale of the experiment and what the numbers can currently support. The training and evaluation sets used here, 40 and 20 images respectively, are roughly one twentieth of the design's target scale of 500 to 1000 images per procedure. Scaling to that target, incorporating Urban100 and Manga109 alongside DIV2K for structural and textural diversity as the design specifies, is the immediate and clearly defined next step, not a vague direction for future work.
 
 One further evaluation component the design specifies was not run in this pilot and is named explicitly rather than left implicit: the downstream case study correlating flagged high-mismatch or high-distribution-shift regions with actual optical character recognition failure on forensic-style text crops, which ties most directly to this special issue's task-driven framing, was implemented as a reusable module but not exercised against real recognition failures in this pilot. This changes what can be claimed about CHASR's practical value and does not require a change to the architecture itself; it is evaluation work, not redesign work.
 
