@@ -294,3 +294,7 @@ Paired bootstrap 95% CIs (10,000 resamples over held-out items):
 ## Abstract trimmed to the special issue's 250-word limit (2026-09-03)
 
 The abstract as written (385 words) exceeded the special issue's stated 250-word submission limit. Trimmed to 242 words by cutting secondary detail (the Real-ESRGAN fidelity comparison, the specific r=0.267 correlation value, some qualifying clauses) while preserving every finding load-bearing for the paper's honesty commitments: the narrow majority-baseline margin, the bootstrap CI not excluding zero, the logistic-control's collapse to the degenerate baseline, and the uneven per-cause recovery (>99% for two causes, 0% for degradation-mismatch). Recompiled (41 pages, down from 42 purely from the shorter abstract), zero errors, visually confirmed the abstract now fits entirely on page 1. Test suite reconfirmed passing (105 passed) as a precaution; no code touched.
+
+## Submitted (2026-09-03)
+
+Manuscript submitted to *Signal Processing: Image Communication*'s Extreme Super-Resolution special issue. **Manuscript number: IMAGE-D-26-01885.** Last commit at submission time: `5d08faa` on `main`. Now awaiting reviewer response — no further edits planned until reviewer/editor feedback arrives, a revise-and-resubmit request, or explicit further instruction.
