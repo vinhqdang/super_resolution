@@ -1,0 +1,40 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=0.8in]{geometry}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, urlcolor=blue, linkcolor=blue}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{7pt}
+\pagenumbering{gobble}
+
+\begin{document}
+
+\begin{flushright}
+Quang-Vinh Dang \\
+British University Vietnam \\
+Hung Yen, Vietnam \\
+vinh.dq4@buv.edu.vn \\
+September 3, 2026
+\end{flushright}
+
+Dear Editors,
+
+Please consider our manuscript, ``CHASR: Causal Hallucination Attribution for Extreme Super-Resolution,'' for publication in the \emph{Signal Processing: Image Communication} Special Issue on Extreme Super-Resolution.
+
+Extreme super-resolution methods now produce output at 8$\times$ to 16$\times$ upscaling factors that looks convincingly sharp, but whether that detail is actually correct is a separate question existing evaluation largely does not answer. Prior work has begun to measure \emph{how much} a super-resolved image hallucinates, through severity scores and controllable-hallucination benchmarks. Our manuscript addresses a different, complementary question that we believe is a better fit for this special issue's explicit interest in task-driven and forensic reliability: not how much a region hallucinates, but \emph{why}. We introduce a four-way causal taxonomy, distinguishing inherent ill-posedness, over-reliance on the generative prior, degradation-model mismatch, and distribution shift as separately identifiable causes of unreliable detail, and CHASR, an architecture that computes this attribution per pixel by wrapping a frozen diffusion backbone with four lightweight signal estimators and a small trained fusion head. We also construct xSR-CausalBench, a synthetic benchmark that extends an existing two-cause controllable-hallucination construction to four causes with weak per-pixel ground truth, making each cause separately trainable and evaluable.
+
+This is a first, pilot-scale validation, and we have written the manuscript to report it as such rather than to oversell it. At real 16$\times$ upscaling on natural photographs, the fusion head's attribution accuracy sits well above chance but only narrowly above the benchmark's own majority-class baseline, and we report this directly rather than only against the more favorable uniform-random comparison. We extended the evaluation with a capacity-matched control (a per-pixel logistic regression on the identical signal input) and a paired bootstrap confidence interval on the reported margin, and report both outcomes as they came out: the control converges to the same degenerate baseline every hand-crafted alternative reaches, and the fusion head's own point-estimate advantage is not yet statistically distinguishable from chance at this pilot's held-out-set size. We believe this transparency, including where our own numbers are weak, suits a methods contribution whose central claim is the causal taxonomy and attribution framework itself, not a fidelity leaderboard result.
+
+The manuscript also reports a real fidelity comparison against Real-ESRGAN chained to the same 16$\times$ factor, a qualitative analysis with two held-out examples per cause selected by a fixed, pre-registered best/worst-accuracy criterion rather than hand-picked, and a disentanglement analysis of correlation among the four proposed causal signals. All code and the scripts used to produce every number in the manuscript are publicly available at \url{https://github.com/vinhqdang/super_resolution}.
+
+This manuscript is original, has not been published previously, and is not under consideration elsewhere. The author has approved the manuscript and declares no competing financial interests or personal relationships that could have appeared to influence this work. The research did not receive any specific grant from funding agencies in the public, commercial, or not-for-profit sectors.
+
+Thank you for your consideration. I look forward to the reviewers' feedback.
+
+\vspace{4pt}
+Sincerely, \\
+Quang-Vinh Dang \\
+British University Vietnam
+
+\end{document}
